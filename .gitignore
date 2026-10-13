@@ -27,3 +27,6 @@ rustc-ice-*.txt
 # Added by cargo
 
 /target
+
+# Example upload directory
+/uploads

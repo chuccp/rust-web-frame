@@ -257,6 +257,38 @@ impl From<sea_orm::TransactionError<Error>> for Error {
     }
 }
 
+impl From<multer::Error> for Error {
+    fn from(value: multer::Error) -> Self {
+        use multer::Error as MulterError;
+        match &value {
+            // The two limits a client can actually hit.
+            MulterError::StreamSizeExceeded { limit } => Error::new(413, "request body too large")
+                .detail(format!(
+                    "the upload exceeds {limit} bytes — raise `web.server.maxBodySize` to accept it"
+                )),
+            MulterError::FieldSizeExceeded { limit, field_name } => {
+                Error::new(413, "uploaded part too large").detail(match field_name {
+                    Some(name) => format!("`{name}` exceeds {limit} bytes"),
+                    None => format!("a part exceeds {limit} bytes"),
+                })
+            }
+            MulterError::NoBoundary
+            | MulterError::DecodeContentType(_)
+            | MulterError::NoMultipart => Error::with_source(code::BAD_REQUEST, value)
+                .detail("the request is not a well-formed multipart body"),
+            _ => Error::with_source(code::BAD_REQUEST, value)
+                .detail("the multipart body could not be read"),
+        }
+    }
+}
+
+impl From<tempfile::PersistError> for Error {
+    fn from(value: tempfile::PersistError) -> Self {
+        Error::with_source(code::INTERNAL_ERROR, value.error)
+            .detail("could not write the upload to a temporary file")
+    }
+}
+
 impl From<axum::http::Error> for Error {
     fn from(value: axum::http::Error) -> Self {
         Error::with_source(code::INTERNAL_ERROR, value)

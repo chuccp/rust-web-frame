@@ -51,6 +51,7 @@ src/
     error.rs        Error (HTTP code + business code), Result alias
     message.rs      Message — the {code,data,msg,type} envelope
     config.rs       ServerConfig
+    multipart.rs    MultipartForm, UploadedFile, streamed parsing, temp-file spilling
     file.rs sse.rs ws.rs
   model/          the ORM layer
     mod.rs          Model<E>, EntryModel<E>, TableEntity/Table, define_model!, Transaction
@@ -127,6 +128,28 @@ extract path params and a pending `WebSocketUpgrade`, build a `Request`, run the
 `fallback` (static files → SPA page → 404 envelope); requests whose path matched but
 method did not go to the `MethodRouter` fallback and get a 405 envelope.
 
+### Request bodies (`web/request.rs`, `web/multipart.rs`)
+
+`Request::body` is an enum, not a `Bytes`:
+
+* `Body::Buffered` — everything except a multipart upload, read under
+  `max_body_size` while dispatching.
+* `Body::Streaming` — a multipart body, deliberately left on the wire. Dispatch decides
+  from the `Content-Type` and never touches it.
+
+`multipart()` and `read_body()` each consume the stream at most once and cache their
+result in a `tokio::sync::OnceCell`; whichever runs second reports a `400` naming the
+problem rather than returning nothing. `buffered_body()` is the internal accessor for the
+synchronous paths (`json`, `form`, `bind_json`), and returns a helpful error for a
+streaming body.
+
+Uploads stream through multer into `MultipartForm`. `collect_file` keeps the first
+`max_upload_memory` bytes in memory and, past that, creates a `tempfile::TempPath` and
+writes the rest there; `TempPath` removes the file on drop, so nothing has to clean up
+after a failed or abandoned request. `sanitise_file_name` reduces a client-supplied name
+to a safe basename — `copy_to_dir` is the only path helper, and it sanitises by
+construction.
+
 ### The model layer (`model/`)
 
 `Model<E>` is plain CRUD; `EntryModel<E>` adds primary-key shortcuts; `define_model!`
@@ -178,15 +201,16 @@ These are enforced, not aspirational:
 
 ## Deliberate non-goals (this iteration)
 
-Captcha, QR codes, mail, image helpers, reverse proxy, and the `component/` crates of the
-Go original (`cache`, `ratelimit`, `cors`, `validator`, `schedule`, `auth`). The extension
-points for them — `Filter`, `Service`, `Converter` — are in place and exercised.
+Captcha, QR codes, mail, image helpers, reverse proxy, the TLS listener, and the
+`component/` crates of the Go original (`cache`, `ratelimit`, `cors`, `validator`,
+`schedule`, `auth`). The extension points for them — `Filter`, `Service`, `Converter` —
+are in place and exercised.
 
 ## Known gaps
 
-* Multipart uploads: `Request` reads the body into memory under a size limit; there is no
-  streaming or multipart parser yet.
 * SSE streams use fixed headers — `SseStream` cannot add response headers, because the
   response is built before the handler runs.
+* There is no chunked-upload helper for a client that streams *in* without a multipart
+  envelope; such a body has to go through `read_body()`, which holds it in memory.
 * TLS: `ServerConfig::ssl` is parsed and reported by `ssl_enabled()` but not yet wired to a
   listener.

@@ -20,8 +20,13 @@ web:
     # Served to browsers for unmatched navigations, so a single-page app keeps its deep
     # links.
     # page404: index.html
-    # `0` means the 10 MiB default, `-1` means unlimited.
+    # `0` means the 10 MiB default, `-1` means unlimited. Raise it to accept uploads
+    # larger than 10 MiB.
     maxBodySize: 0
+    # How much of one uploaded file is held in memory before it spills to a temporary
+    # file. `0` means the 1 MiB default. This is what keeps a big upload costing disk
+    # space rather than resident memory.
+    maxUploadMemory: 0
 
   # Extra servers, each with its own controllers and port. The port here overrides
   # whatever the code asked for, so a deployment can move a group without a rebuild.

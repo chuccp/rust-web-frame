@@ -39,6 +39,7 @@ pub mod error;
 pub mod file;
 pub mod filter;
 pub mod message;
+pub mod multipart;
 pub mod request;
 pub mod response;
 pub mod route;
@@ -56,6 +57,10 @@ pub use filter::{
     standard_methods,
 };
 pub use message::Message;
+pub use multipart::{
+    DEFAULT_MAX_UPLOAD_MEMORY, MultipartForm, MultipartLimits, UploadedFile,
+    parse as parse_multipart, sanitise_file_name,
+};
 pub use request::{Request, SetCookie};
 pub use response::{IntoResponse, Response, ResponseBody, json_response};
 pub use route::{HandlerMeta, MetaOption, Route, RouteHandle, RouteKind, to_axum_path};

@@ -176,6 +176,7 @@ cargo run --example helloworld    # http://localhost:19009/
 cargo run --example rest          # controller + service + 后台任务
 cargo run --example model         # 实体、查询、事务（内存 SQLite）
 cargo run --example withmeta      # 声明式路由
+cargo run --example upload        # 流式 multipart 上传（端口 19012）
 ```
 
 ```rust
@@ -242,15 +243,83 @@ let section: AppSection = config.unmarshal_key("app")?;
 
 ---
 
+## 文件上传
+
+`multipart/form-data` 的请求体是**流式处理、绝不整体缓冲**的。每个文件在内存里最多留
+`web.server.maxUploadMemory`（默认 1 MiB），超过就落到临时文件——所以一个 2 GB 的上传消耗的
+是磁盘而不是内存，请求用完即删。
+
+```rust
+async fn upload(req: Request) -> Result<Message> {
+    let form = req.multipart().await?;
+
+    let caption = form.text_or("caption", "(untitled)").to_owned();
+    let photo = form
+        .file("photo")
+        .ok_or_else(|| Error::bad_request().detail("a `photo` file is required"))?;
+
+    // `copy_to_dir` 会先把客户端给的文件名消毒，所以 `../../etc/passwd`
+    // 落到上传目录里是 `passwd`。
+    let saved = photo.copy_to_dir("./uploads").await?;
+
+    Ok(Message::data(json!({
+        "caption": caption,
+        "fileName": photo.sanitised_file_name(),
+        "contentType": photo.content_type(),
+        "size": photo.size(),
+        "spilledToDisk": !photo.is_in_memory(),
+        "savedAs": saved.display().to_string(),
+    })))
+}
+```
+
+字段名可能重复（多文件输入框、复选框组），所以 `MultipartForm` 每个访问器都有"取第一个"和
+"取全部"两种：
+
+| 调用 | 含义 |
+|---|---|
+| `form.text(name)` / `text_or(name, default)` | 文本字段的第一个值 |
+| `form.texts(name)` | 重复文本字段的全部值 |
+| `form.file(name)` / `form.files(name)` | 某字段名下第一个 / 全部文件 |
+| `form.all_files()` / `form.file_count()` | 表单里的全部文件 |
+
+`UploadedFile` 把"内容到底在内存还是磁盘"藏在一套 API 后面：
+
+| 调用 | 含义 |
+|---|---|
+| `file.file_name()` | 客户端发来的名字——**绝不能**直接当路径用 |
+| `file.sanitised_file_name()` | 上面这个名字消毒后的安全 basename |
+| `file.content_type()` / `file.size()` | 声明的类型、字节数 |
+| `file.bytes().await?` | 全部内容，内存或临时文件都能读 |
+| `file.copy_to(path).await?` | 写出到指定路径，自动建父目录 |
+| `file.copy_to_dir(dir).await?` | 用**消毒后**的文件名写入，返回落盘路径 |
+| `file.temp_path()` | 落到磁盘时的临时文件路径 |
+
+`Request::save_uploaded_file(file, destination)` 对应 Go 原版的 `SaveUploadedFile`。
+
+### 限制
+
+| 配置 | 默认值 | 含义 |
+|---|---|---|
+| `web.server.maxBodySize` | 10 MiB（`-1` 为不限） | 整个请求体；超出返回 `413` |
+| `web.server.maxUploadMemory` | 1 MiB | 单文件内存预算；超出落临时文件 |
+
+两条值得记住的规则：请求体**只能读一次**——先 `multipart()` 再 `read_body()` 会返回一个
+明确的 `400`，而不是静默返回空；以及 multipart 请求上的 `req.page()` 从 query string 读
+`pageNo`/`pageSize`，因为此时的 body 装的是文件不是 JSON。
+
+---
+
 ## 框架里有什么
 
 | 领域 | 类型 |
 |---|---|
 | **路由** | `Context::get/post/put/delete/patch/any`、`Routes`、`RouteHandle`、Gin 风格的 `:id` 与 `*path`、context path、`static_files`、404/405 信封 |
-| **请求** | `Request` —— 路径参数、query、form、JSON 绑定、分页、头、Cookie、客户端 IP、扩展属性、`has_meta` |
+| **请求** | `Request` —— 路径参数、query、form、JSON 绑定、multipart 文件上传、分页、头、Cookie、客户端 IP、扩展属性、`has_meta` |
 | **响应** | `Response`、`Message`（`{code, data, msg, type}`）、`FileResponse`、重定向、原始 body，以及为 handler 常用返回类型实现的 `IntoResponse` |
 | **错误** | `Error` 同时承载 HTTP 码与业务码；从 `io::Error`、`sea_orm::DbErr`、`serde_json::Error`、`String`、`&str` 的 `?` 友好转换 |
 | **流式** | `SseStream`、`WebSocketStream` |
+| **上传** | `MultipartForm`、`UploadedFile`、`sanitise_file_name`，流式解析并落临时文件 |
 | **扩展点** | `Filter`、`Converter`、`Runner`、`Rest`、`Service` |
 | **数据** | `db::Database`、`db::transaction`、`Model<E>`、`EntryModel<E>`、`define_model!`、`ModelGroup`、`Transaction` |
 | **分页** | `Page`、`Paged<T>` |
@@ -336,8 +405,9 @@ feature 开关：`sqlite`（默认）、`mysql`、`postgres`。
 | 按结构体名反射 | 以 `TypeId` 为键的注册表，`ctx.service::<T>()` | Rust 没有运行时反射。 |
 | `ctx.Get(...).WithMeta(...)` 返回 `*Route` | `ctx.get(...)` 返回 `RouteHandle`，`with_meta` 消费它 | 惯用的 Rust builder，链式调用不变。 |
 | `pageAble` | `Paged<T>` | —— |
+| `c.MultipartForm()`（解析进内存，超过 32 MiB 落盘） | `req.multipart().await?`（流式，超过 1 MiB 落盘） | 流式处理让大文件根本不进堆，而不只是"控制在一个阈值以内"。 |
 
-这一版没有实现：验证码、二维码、邮件、反向代理，以及 `component/` 下的那些组件
+这一版没有实现：验证码、二维码、邮件、反向代理、TLS 监听，以及 `component/` 下的那些组件
 （`cache`、`ratelimit` 等）。它们的扩展点——`Filter`、`Service`、`Converter`——都已就位。
 
 ---

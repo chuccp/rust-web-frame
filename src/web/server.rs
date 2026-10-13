@@ -2,14 +2,13 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use axum::Router;
 use axum::extract::{FromRequestParts, Path, Request as AxumRequest};
 use axum::http::Method;
 use axum::response::IntoResponse;
 use axum::routing::MethodRouter;
-use bytes::Bytes;
 use tokio::net::TcpListener;
 
 use super::config::ServerConfig;
@@ -17,7 +16,7 @@ use super::converter::{Converter, DefaultConverter};
 use super::error::{Error, Result};
 use super::filter::{Filter, FilterChain};
 use super::message::Message;
-use super::request::Request;
+use super::request::{Body, Request};
 use super::route::to_axum_path;
 use super::routes::Routes;
 use crate::core::Context;
@@ -238,20 +237,20 @@ async fn dispatch(state: Dispatcher, req: AxumRequest) -> axum::response::Respon
         .await
         .ok();
 
-    let limit = state.config.effective_max_body_size();
-    let body: Bytes = match axum::body::to_bytes(body, limit).await {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            let error = if limit != usize::MAX {
-                Error::new(413, "request body too large")
-                    .detail(format!("body exceeds {limit} bytes"))
-            } else {
-                Error::from(err)
-            };
-            return state
-                .converter
-                .convert(Err(error), &Request::for_test("/"))
-                .await;
+    // A multipart body is left on the wire: uploads can be far larger than it is
+    // sensible to hold in memory, and the parser can spill them to disk instead.
+    let body = if crate::web::request::is_multipart_content_type(&parts) {
+        Body::Streaming(Mutex::new(Some(body)))
+    } else {
+        match crate::web::request::read_to_bytes(body, state.config.effective_max_body_size()).await
+        {
+            Ok(bytes) => Body::Buffered(bytes),
+            Err(error) => {
+                return state
+                    .converter
+                    .convert(Err(error), &Request::for_test("/"))
+                    .await;
+            }
         }
     };
 
@@ -282,12 +281,12 @@ struct FallbackState {
 async fn fallback(state: FallbackState, req: AxumRequest) -> axum::response::Response {
     // The fallback bypasses the filter chain, so build a request by hand.
     let (parts, body) = req.into_parts();
-    let body = axum::body::to_bytes(body, state.config.effective_max_body_size())
+    let body = crate::web::request::read_to_bytes(body, state.config.effective_max_body_size())
         .await
         .unwrap_or_default();
     let request = Request::new(
         parts.clone(),
-        body,
+        Body::Buffered(body),
         HashMap::new(),
         String::new(),
         Arc::new(super::route::HandlerMeta::new()),

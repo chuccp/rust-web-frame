@@ -37,6 +37,9 @@ pub struct ServerConfig {
     /// Maximum request body size in bytes. `0` means the 10 MiB default, `-1` means
     /// unlimited.
     pub max_body_size: i64,
+    /// How much of one uploaded file is held in memory before it spills to a temporary
+    /// file. `0` means the 1 MiB default.
+    pub max_upload_memory: i64,
     /// Seconds to wait for request headers. `0` means 15.
     pub read_header_timeout: u64,
     /// Seconds a whole request may take. `0` means no limit.
@@ -55,6 +58,7 @@ impl Default for ServerConfig {
             locations: Vec::new(),
             page404: None,
             max_body_size: 0,
+            max_upload_memory: 0,
             read_header_timeout: 0,
             read_timeout: 0,
             max_header_bytes: 0,
@@ -101,6 +105,19 @@ impl ServerConfig {
             n if n < 0 => usize::MAX,
             0 => DEFAULT_MAX_BODY_SIZE as usize,
             n => n as usize,
+        }
+    }
+
+    /// The effective in-memory budget for one uploaded file, in bytes.
+    ///
+    /// Anything larger is written to a temporary file instead, so a big upload costs disk
+    /// space rather than resident memory.
+    #[must_use]
+    pub fn effective_max_upload_memory(&self) -> u64 {
+        if self.max_upload_memory > 0 {
+            self.max_upload_memory as u64
+        } else {
+            super::multipart::DEFAULT_MAX_UPLOAD_MEMORY
         }
     }
 
@@ -165,6 +182,18 @@ mod tests {
 
         config.max_body_size = 1024;
         assert_eq!(config.effective_max_body_size(), 1024);
+    }
+
+    #[test]
+    fn upload_memory_defaults_to_one_mebibyte() {
+        let mut config = ServerConfig::default();
+        assert_eq!(
+            config.effective_max_upload_memory(),
+            super::super::multipart::DEFAULT_MAX_UPLOAD_MEMORY
+        );
+
+        config.max_upload_memory = 4096;
+        assert_eq!(config.effective_max_upload_memory(), 4096);
     }
 
     #[test]

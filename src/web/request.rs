@@ -10,13 +10,40 @@ use axum::http::request::Parts;
 use bytes::Bytes;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
+use tokio::sync::OnceCell;
 
 use super::config::ServerConfig;
 use super::error::{Error, Result};
+use super::multipart::{MultipartForm, MultipartLimits};
 use super::route::{HandlerMeta, MetaOption};
 use crate::core::Context;
 use crate::util::Page;
 use crate::util::str_util::url_decode;
+
+/// Returned when a request body is asked for twice, or by two different accessors.
+const BODY_ALREADY_READ: &str = "the request body has already been consumed — a body can be read once, by either \
+     `read_body()` or `multipart()`";
+
+/// Where the request body lives.
+///
+/// Everything except a multipart upload arrives already buffered. An upload is left as a
+/// stream, because it can be far larger than it is sensible to hold in memory — see
+/// [`Request::multipart`].
+pub(crate) enum Body {
+    /// Read into memory before the handler ran.
+    Buffered(Bytes),
+    /// Still on the wire. Consumed by the first of `multipart()` / `read_body()`.
+    Streaming(Mutex<Option<axum::body::Body>>),
+}
+
+impl std::fmt::Debug for Body {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Buffered(bytes) => f.debug_tuple("Buffered").field(&bytes.len()).finish(),
+            Self::Streaming(_) => f.write_str("Streaming(..)"),
+        }
+    }
+}
 
 /// Everything a handler needs to know about the incoming request.
 ///
@@ -29,7 +56,7 @@ pub struct Request {
 
 struct Inner {
     parts: Parts,
-    body: Bytes,
+    body: Body,
     params: HashMap<String, String>,
     route_path: String,
     meta: Arc<HandlerMeta>,
@@ -39,6 +66,8 @@ struct Inner {
     json: OnceLock<Result<Value, Error>>,
     form: OnceLock<HashMap<String, String>>,
     query: OnceLock<HashMap<String, String>>,
+    buffered: OnceCell<Bytes>,
+    multipart: OnceCell<MultipartForm>,
     attrs: Mutex<HashMap<String, Arc<dyn Any + Send + Sync>>>,
     cookies_to_set: Mutex<Vec<SetCookie>>,
 }
@@ -88,7 +117,7 @@ impl Request {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         parts: Parts,
-        body: Bytes,
+        body: Body,
         params: HashMap<String, String>,
         route_path: String,
         meta: Arc<HandlerMeta>,
@@ -109,6 +138,8 @@ impl Request {
                 json: OnceLock::new(),
                 form: OnceLock::new(),
                 query: OnceLock::new(),
+                buffered: OnceCell::new(),
+                multipart: OnceCell::new(),
                 attrs: Mutex::new(HashMap::new()),
                 cookies_to_set: Mutex::new(Vec::new()),
             }),
@@ -125,7 +156,7 @@ impl Request {
             .into_parts();
         Self::new(
             parts,
-            Bytes::new(),
+            Body::Buffered(Bytes::new()),
             HashMap::new(),
             path.to_string(),
             Arc::new(HandlerMeta::new()),
@@ -285,6 +316,9 @@ impl Request {
 
     /// A body/form parameter. Reads `application/x-www-form-urlencoded` bodies and, for
     /// other content types, falls back to the query string.
+    /// A form parameter. Reads `application/x-www-form-urlencoded` bodies and, for
+    /// other content types, falls back to the query string. Multipart fields are not
+    /// included — reach for [`multipart`](Self::multipart) on those requests.
     pub fn form(&self, key: &str) -> Option<&str> {
         if let Some(value) = self.form_map().get(key) {
             return Some(value.as_str());
@@ -301,20 +335,151 @@ impl Request {
             if !is_urlencoded {
                 return HashMap::new();
             }
-            parse_pairs(std::str::from_utf8(&self.inner.body).unwrap_or(""))
+            let Some(body) = self.body() else {
+                return HashMap::new();
+            };
+            parse_pairs(std::str::from_utf8(body).unwrap_or(""))
         })
     }
 
     // ------------------------------------------------------------------ body
 
-    /// The raw request body.
-    pub fn body(&self) -> &Bytes {
-        &self.inner.body
+    /// The raw request body, when it was read into memory before the handler ran.
+    ///
+    /// `None` for a multipart upload, whose body is deliberately left on the wire — call
+    /// [`multipart`](Self::multipart) for those, or [`read_body`](Self::read_body) to pull
+    /// it into memory regardless.
+    #[must_use]
+    pub fn body(&self) -> Option<&Bytes> {
+        match &self.inner.body {
+            Body::Buffered(bytes) => Some(bytes),
+            Body::Streaming(_) => None,
+        }
+    }
+
+    /// Reads the whole body into memory, whatever its content type.
+    ///
+    /// The result is cached, so calling this twice is free.
+    ///
+    /// # Errors
+    ///
+    /// Fails with `413` when the body exceeds
+    /// [`ServerConfig::max_body_size`](super::ServerConfig::max_body_size), or with `400`
+    /// when the body was already consumed by [`multipart`](Self::multipart).
+    pub async fn read_body(&self) -> Result<&Bytes> {
+        match &self.inner.body {
+            Body::Buffered(bytes) => Ok(bytes),
+            Body::Streaming(slot) => {
+                let limit = self.inner.server_config.effective_max_body_size();
+                self.inner
+                    .buffered
+                    .get_or_try_init(|| async {
+                        let body = slot
+                            .lock()
+                            .expect("body lock poisoned")
+                            .take()
+                            .ok_or_else(|| Error::bad_request().detail(BODY_ALREADY_READ))?;
+                        read_to_bytes(body, limit).await
+                    })
+                    .await
+            }
+        }
     }
 
     /// The body decoded as UTF-8, lossily.
-    pub fn body_string(&self) -> String {
-        String::from_utf8_lossy(&self.inner.body).into_owned()
+    ///
+    /// Returns `None` for a body that has not been read into memory — see
+    /// [`body`](Self::body).
+    #[must_use]
+    pub fn body_string(&self) -> Option<String> {
+        self.body()
+            .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+    }
+
+    /// The parsed `multipart/form-data` body.
+    ///
+    /// The body is streamed through the parser: one file at a time is held in memory up
+    /// to [`ServerConfig::max_upload_memory`](super::ServerConfig::max_upload_memory),
+    /// and anything larger spills to a temporary file that is removed when the form is
+    /// dropped. Memory use is therefore bounded per concurrent upload, not per upload
+    /// size.
+    ///
+    /// The result is cached, and the body can only be consumed once.
+    ///
+    /// # Errors
+    ///
+    /// Fails with `400` when the request is not a well-formed multipart body or the body
+    /// was already consumed, and with `413` when it exceeds the configured limits.
+    ///
+    /// ```no_run
+    /// # use rust_web_frame::web::{Error, Message, Request, Result};
+    /// # use serde_json::json;
+    /// async fn upload(req: Request) -> Result<Message> {
+    ///     let form = req.multipart().await?;
+    ///     let file = form
+    ///         .file("avatar")
+    ///         .ok_or_else(|| Error::bad_request().detail("avatar is required"))?;
+    ///     Ok(Message::data(json!({
+    ///         "name": file.sanitised_file_name(),
+    ///         "size": file.size(),
+    ///     })))
+    /// }
+    /// ```
+    pub async fn multipart(&self) -> Result<&MultipartForm> {
+        self.inner
+            .multipart
+            .get_or_try_init(|| async {
+                let content_type = self.content_type().ok_or_else(|| {
+                    Error::bad_request().detail("a multipart request needs a Content-Type header")
+                })?;
+                let limits = MultipartLimits {
+                    max_body_size: self.max_body_size(),
+                    max_upload_memory: self.inner.server_config.effective_max_upload_memory(),
+                };
+
+                match &self.inner.body {
+                    Body::Streaming(slot) => {
+                        let body = slot
+                            .lock()
+                            .expect("body lock poisoned")
+                            .take()
+                            .ok_or_else(|| Error::bad_request().detail(BODY_ALREADY_READ))?;
+                        super::multipart::parse(body.into_data_stream(), content_type, limits).await
+                    }
+                    // A multipart body that arrived buffered — a test, or a caller that
+                    // read it first — is parsed from memory.
+                    Body::Buffered(bytes) => {
+                        let stream = tokio_stream::once(Ok::<Bytes, std::io::Error>(bytes.clone()));
+                        super::multipart::parse(stream, content_type, limits).await
+                    }
+                }
+            })
+            .await
+    }
+
+    /// Writes an uploaded file to `destination`, creating parent directories as needed.
+    ///
+    /// Returns how many bytes were written. This is the Go original's
+    /// `SaveUploadedFile`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the destination cannot be created or written.
+    pub async fn save_uploaded_file(
+        &self,
+        file: &super::multipart::UploadedFile,
+        destination: impl AsRef<std::path::Path>,
+    ) -> Result<u64> {
+        file.copy_to(destination).await
+    }
+
+    /// The multipart file-name limit used for a non-multipart body: the server's whole
+    /// body limit.
+    fn max_body_size(&self) -> u64 {
+        match self.inner.server_config.effective_max_body_size() {
+            usize::MAX => u64::MAX,
+            other => other as u64,
+        }
     }
 
     /// The body parsed as JSON. Parsed once and cached.
@@ -326,15 +491,24 @@ impl Request {
                 Error::bad_request().detail("JSON parameters are not supported in GET requests")
             );
         }
+        let body = self.buffered_body()?;
         self.inner
             .json
             .get_or_init(|| {
-                if self.inner.body.is_empty() {
+                if body.is_empty() {
                     return Ok(Value::Null);
                 }
-                serde_json::from_slice(&self.inner.body).map_err(Error::from)
+                serde_json::from_slice(body).map_err(Error::from)
             })
             .clone()
+    }
+
+    /// The body, provided it is already in memory.
+    fn buffered_body(&self) -> Result<&Bytes> {
+        self.body().ok_or_else(|| {
+            Error::bad_request()
+                .detail("this request carries a multipart upload — read it with `multipart()`")
+        })
     }
 
     /// The body parsed as a JSON object.
@@ -410,7 +584,8 @@ impl Request {
     /// Reads pagination parameters: from the query/form for `GET`, from the JSON body
     /// otherwise. Missing values fall back to `pageNo=1`, `pageSize=10`.
     pub fn page(&self) -> Result<Page> {
-        if self.is_get() {
+        // A multipart body carries files, not JSON — take the page from the query string.
+        if self.is_get() || self.is_multipart() {
             return Ok(self.form_page());
         }
         let object = self.json_object()?;
@@ -592,6 +767,41 @@ impl Request {
     }
 }
 
+/// Reads a body into memory, failing with `413` once it exceeds `limit`.
+///
+/// The limit is enforced while reading rather than by `axum::body::to_bytes`, so the
+/// error names the configuration key the operator has to change.
+pub(crate) async fn read_to_bytes(body: axum::body::Body, limit: usize) -> Result<Bytes> {
+    use futures_util::StreamExt;
+
+    let mut stream = body.into_data_stream();
+    let mut collected = bytes::BytesMut::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(Error::from)?;
+        if chunk.len() > limit.saturating_sub(collected.len()) {
+            return Err(Error::new(413, "request body too large").detail(format!(
+                "the body exceeds {limit} bytes — raise `web.server.maxBodySize` to accept it"
+            )));
+        }
+        collected.extend_from_slice(&chunk);
+    }
+    Ok(collected.freeze())
+}
+
+/// Reports whether a request carries a `multipart/form-data` body.
+pub(crate) fn is_multipart_content_type(parts: &Parts) -> bool {
+    parts
+        .headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .trim_start()
+                .to_ascii_lowercase()
+                .starts_with("multipart/form-data")
+        })
+}
+
 fn parse_i64(value: Option<&str>) -> i64 {
     value
         .and_then(|v| v.trim().parse::<i64>().ok())
@@ -671,7 +881,9 @@ mod tests {
             .into_parts();
         let req = Request::new(
             parts,
-            Bytes::from_static(br#"{"name":"alice","age":"31","admin":true}"#),
+            Body::Buffered(Bytes::from_static(
+                br#"{"name":"alice","age":"31","admin":true}"#,
+            )),
             HashMap::new(),
             "/x".to_string(),
             Arc::new(HandlerMeta::new()),
@@ -710,7 +922,7 @@ mod tests {
             .into_parts();
         let req = Request::new(
             parts,
-            Bytes::new(),
+            Body::Buffered(Bytes::new()),
             HashMap::new(),
             "/x".to_string(),
             Arc::new(HandlerMeta::new()),

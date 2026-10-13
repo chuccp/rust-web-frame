@@ -181,6 +181,7 @@ cargo run --example helloworld    # http://localhost:19009/
 cargo run --example rest          # a controller + service + background runner
 cargo run --example model         # entities, queries, transactions (in-memory SQLite)
 cargo run --example withmeta      # declarative routing
+cargo run --example upload        # streamed multipart uploads (port 19012)
 ```
 
 ```rust
@@ -247,15 +248,85 @@ let section: AppSection = config.unmarshal_key("app")?;
 
 ---
 
+## File uploads
+
+A `multipart/form-data` body is **streamed, never buffered whole**. Each file is held in
+memory up to `web.server.maxUploadMemory` (1 MiB by default) and spills to a temporary
+file past that — so a 2 GB upload costs disk, not RAM, and the temp file is deleted as
+soon as the request is done with it.
+
+```rust
+async fn upload(req: Request) -> Result<Message> {
+    let form = req.multipart().await?;
+
+    let caption = form.text_or("caption", "(untitled)").to_owned();
+    let photo = form
+        .file("photo")
+        .ok_or_else(|| Error::bad_request().detail("a `photo` file is required"))?;
+
+    // `copy_to_dir` sanitises the client-supplied name, so `../../etc/passwd`
+    // lands as `passwd` inside the upload directory.
+    let saved = photo.copy_to_dir("./uploads").await?;
+
+    Ok(Message::data(json!({
+        "caption": caption,
+        "fileName": photo.sanitised_file_name(),
+        "contentType": photo.content_type(),
+        "size": photo.size(),
+        "spilledToDisk": !photo.is_in_memory(),
+        "savedAs": saved.display().to_string(),
+    })))
+}
+```
+
+`MultipartForm` gives you both flavours of every accessor, because a name may repeat
+(multi-file inputs, checkbox groups):
+
+| Call | Meaning |
+|---|---|
+| `form.text(name)` / `text_or(name, default)` | first value of a text field |
+| `form.texts(name)` | every value of a repeated text field |
+| `form.file(name)` / `form.files(name)` | first / every file under a field name |
+| `form.all_files()` / `form.file_count()` | every file in the form |
+
+`UploadedFile` keeps the content wherever it landed behind one API:
+
+| Call | Meaning |
+|---|---|
+| `file.file_name()` | the name the client sent — **never** use it as a path |
+| `file.sanitised_file_name()` | that name reduced to a safe basename |
+| `file.content_type()` / `file.size()` | declared type, byte count |
+| `file.bytes().await?` | the whole content, from memory or from the temp file |
+| `file.copy_to(path).await?` | writes it out, creating parent directories |
+| `file.copy_to_dir(dir).await?` | writes it under the *sanitised* name, returns the path |
+| `file.temp_path()` | the spill file, when there is one |
+
+`Request::save_uploaded_file(file, destination)` is the Go original's `SaveUploadedFile`.
+
+### Limits
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `web.server.maxBodySize` | 10 MiB (`-1` = unlimited) | whole request body; over it is `413` |
+| `web.server.maxUploadMemory` | 1 MiB | per-file in-memory budget; past it spills to a temp file |
+
+Two rules worth knowing: a body can be read **once** — calling `multipart()` and then
+`read_body()` fails with a clear `400` rather than silently returning nothing — and
+`req.page()` on a multipart request reads `pageNo`/`pageSize` from the query string,
+since the body holds files rather than JSON.
+
+---
+
 ## What is in the box
 
 | Area | Types |
 |---|---|
 | **Routing** | `Context::get/post/put/delete/patch/any`, `Routes`, `RouteHandle`, Gin-style `:id` and `*path` templates, context paths, `static_files`, 404/405 envelopes |
-| **Requests** | `Request` — params, query, form, JSON binding, pagination, headers, cookies, client IP, attributes, `has_meta` |
+| **Requests** | `Request` — params, query, form, JSON binding, multipart uploads, pagination, headers, cookies, client IP, attributes, `has_meta` |
 | **Responses** | `Response`, `Message` (`{code, data, msg, type}`), `FileResponse`, redirects, raw bodies, `IntoResponse` for the types handlers actually return |
 | **Errors** | `Error` with HTTP *and* business codes, `?`-friendly conversions from `io::Error`, `sea_orm::DbErr`, `serde_json::Error`, `String`, `&str` |
 | **Streaming** | `SseStream`, `WebSocketStream` |
+| **Uploads** | `MultipartForm`, `UploadedFile`, `sanitise_file_name`, streamed and spilling to temp files |
 | **Extensibility** | `Filter`, `Converter`, `Runner`, `Rest`, `Service` |
 | **Data** | `db::Database`, `db::transaction`, `Model<E>`, `EntryModel<E>`, `define_model!`, `ModelGroup`, `Transaction` |
 | **Pagination** | `Page`, `Paged<T>` |
@@ -342,10 +413,11 @@ The design is the same; the language forces a few honest changes.
 | Reflection by struct name | `TypeId`-keyed registry, `ctx.service::<T>()` | No runtime reflection. |
 | `ctx.Get(...).WithMeta(...)` returns `*Route` | `ctx.get(...)` returns `RouteHandle`, `with_meta` consumes it | Idiomatic Rust builder, same chaining. |
 | `pageAble` | `Paged<T>` | — |
+| `c.MultipartForm()` (parses into memory, spills past 32 MiB) | `req.multipart().await?` (streamed, spills past 1 MiB) | Streaming keeps a large upload off the heap entirely, not just under a threshold. |
 
-Not implemented in this iteration: captcha, QR codes, mail, reverse proxy, and the
-component crates (`component/cache`, `component/ratelimit`, …). The extension points for
-them — `Filter`, `Service`, `Converter` — are all in place.
+Not implemented in this iteration: captcha, QR codes, mail, reverse proxy, the TLS
+listener, and the component crates (`component/cache`, `component/ratelimit`, …). The
+extension points for them — `Filter`, `Service`, `Converter` — are all in place.
 
 ---
 

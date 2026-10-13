@@ -472,6 +472,267 @@ async fn a_registered_controller_is_looked_up_by_its_own_type() {
     assert_eq!(status, StatusCode::OK);
 }
 
+// ------------------------------------------------------------------- uploads
+
+/// Builds a `multipart/form-data` body plus its content type.
+fn multipart(parts: &[(&str, Option<&str>, &str, &[u8])]) -> (String, Vec<u8>) {
+    let boundary = "----RustWebFrameTestBoundary";
+    let mut body = Vec::new();
+    for (name, file_name, content_type, data) in parts {
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        match file_name {
+            Some(file_name) => body.extend_from_slice(
+                format!(
+                    "Content-Disposition: form-data; name=\"{name}\"; filename=\"{file_name}\"\r\n"
+                )
+                .as_bytes(),
+            ),
+            None => body.extend_from_slice(
+                format!("Content-Disposition: form-data; name=\"{name}\"\r\n").as_bytes(),
+            ),
+        }
+        if !content_type.is_empty() {
+            body.extend_from_slice(format!("Content-Type: {content_type}\r\n").as_bytes());
+        }
+        body.extend_from_slice(b"\r\n");
+        body.extend_from_slice(data);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    (format!("multipart/form-data; boundary={boundary}"), body)
+}
+
+fn upload_request(path: &str, content_type: &str, body: Vec<u8>) -> HttpRequest<Body> {
+    HttpRequest::builder()
+        .method("POST")
+        .uri(path)
+        .header("content-type", content_type)
+        .body(Body::from(body))
+        .expect("valid request")
+}
+
+#[tokio::test]
+async fn an_uploaded_file_is_streamed_parsed_and_saved() {
+    let uploads = tempfile::tempdir().unwrap();
+    let directory = uploads.path().to_path_buf();
+
+    let app = app(|builder| {
+        let directory = directory.clone();
+        builder.routes(move |ctx| {
+            let directory = directory.clone();
+            ctx.post(
+                "/upload",
+                handler(move |req: Request| {
+                    let directory = directory.clone();
+                    async move {
+                        let form = req.multipart().await?;
+                        let caption = form.text_or("caption", "").to_owned();
+                        let file = form
+                            .file("avatar")
+                            .ok_or_else(|| Error::bad_request().detail("avatar is required"))?;
+
+                        let saved = file.copy_to_dir(&directory).await?;
+                        Ok(Response::json(json!({
+                            "caption": caption,
+                            "fileName": file.sanitised_file_name(),
+                            "contentType": file.content_type(),
+                            "size": file.size(),
+                            "saved": saved.display().to_string(),
+                        })))
+                    }
+                }),
+            );
+        });
+    })
+    .await;
+
+    let (content_type, body) = multipart(&[
+        ("caption", None, "", b"a nice photo"),
+        ("avatar", Some("me.png"), "image/png", b"PNGDATA"),
+    ]);
+    let (status, json) = call(&app, upload_request("/upload", &content_type, body)).await;
+
+    assert_eq!(status, StatusCode::OK, "got {json}");
+    assert_eq!(json["caption"], "a nice photo");
+    assert_eq!(json["fileName"], "me.png");
+    assert_eq!(json["contentType"], "image/png");
+    assert_eq!(json["size"], 7);
+    assert_eq!(
+        tokio::fs::read(directory.join("me.png")).await.unwrap(),
+        b"PNGDATA"
+    );
+}
+
+#[tokio::test]
+async fn a_large_upload_spills_to_a_temporary_file_and_reads_back() {
+    let app = app(|builder| {
+        // A 1 KiB in-memory budget, so anything bigger has to go to disk.
+        builder.routes(|ctx| {
+            ctx.post(
+                "/size",
+                handler(|req: Request| async move {
+                    let form = req.multipart().await?;
+                    let file = form
+                        .file("blob")
+                        .ok_or_else(|| Error::bad_request().detail("blob is required"))?;
+                    Ok(Response::json(json!({
+                        "size": file.size(),
+                        "readBack": file.bytes().await?.len(),
+                    })))
+                }),
+            );
+        });
+    })
+    .await;
+
+    let payload = vec![b'x'; 8192];
+    let (content_type, body) = multipart(&[(
+        "blob",
+        Some("big.bin"),
+        "application/octet-stream",
+        &payload,
+    )]);
+    let (status, json) = call(&app, upload_request("/size", &content_type, body)).await;
+
+    assert_eq!(status, StatusCode::OK, "got {json}");
+    assert_eq!(json["size"], 8192);
+    assert_eq!(json["readBack"], 8192);
+}
+
+#[tokio::test]
+async fn a_hostile_file_name_cannot_escape_the_upload_directory() {
+    let root = tempfile::tempdir().unwrap();
+    // Uploads land in a subdirectory, so a successful traversal would be visible as a
+    // file appearing next to it.
+    let directory = root.path().join("uploads");
+    let sentinel = root.path().join("escaped.txt");
+
+    let app = app(|builder| {
+        let directory = directory.clone();
+        builder.routes(move |ctx| {
+            let directory = directory.clone();
+            ctx.post(
+                "/upload",
+                handler(move |req: Request| {
+                    let directory = directory.clone();
+                    async move {
+                        let form = req.multipart().await?;
+                        let file = form
+                            .file("doc")
+                            .ok_or_else(|| Error::bad_request().detail("doc is required"))?;
+                        let saved = file.copy_to_dir(&directory).await?;
+                        Ok(Response::json(
+                            json!({ "saved": saved.display().to_string() }),
+                        ))
+                    }
+                }),
+            );
+        });
+    })
+    .await;
+
+    let (content_type, body) =
+        multipart(&[("doc", Some("../../escaped.txt"), "text/plain", b"pwned")]);
+    let (status, json) = call(&app, upload_request("/upload", &content_type, body)).await;
+
+    assert_eq!(status, StatusCode::OK);
+    let saved = std::path::PathBuf::from(json["saved"].as_str().unwrap());
+    assert!(saved.starts_with(&directory), "escaped to {saved:?}");
+    assert_eq!(saved.file_name().unwrap(), "escaped.txt");
+    assert!(!sentinel.exists(), "the traversal must not have happened");
+    assert_eq!(tokio::fs::read(&saved).await.unwrap(), b"pwned");
+}
+
+#[tokio::test]
+async fn an_oversized_upload_is_rejected_with_413() {
+    let config = Config::from_value(json!({
+        "web": { "server": { "maxBodySize": 256 } }
+    }));
+    let mut builder = Builder::new(config);
+    builder.routes(|ctx| {
+        ctx.post(
+            "/upload",
+            handler(|req: Request| async move {
+                let form = req.multipart().await?;
+                Ok(Response::json(json!({ "files": form.file_count() })))
+            }),
+        );
+    });
+    let app = builder.build().into_router().await.unwrap();
+
+    let payload = vec![b'x'; 4096];
+    let (content_type, body) = multipart(&[("blob", Some("big.bin"), "", &payload)]);
+    let (status, json) = call(&app, upload_request("/upload", &content_type, body)).await;
+
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "got {json}");
+    assert_eq!(json["code"], 413);
+    assert!(json["msg"].as_str().unwrap().contains("maxBodySize"));
+}
+
+#[tokio::test]
+async fn a_request_body_cannot_be_read_twice() {
+    let app = app(|builder| {
+        builder.routes(|ctx| {
+            ctx.post(
+                "/twice",
+                handler(|req: Request| async move {
+                    let _ = req.multipart().await?;
+                    // The stream is gone; reading it again has to say so.
+                    req.read_body().await?;
+                    Ok(Response::json(json!({ "ok": true })))
+                }),
+            );
+        });
+    })
+    .await;
+
+    let (content_type, body) = multipart(&[("a", None, "", b"hello")]);
+    let (status, json) = call(&app, upload_request("/twice", &content_type, body)).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        json["msg"]
+            .as_str()
+            .unwrap()
+            .contains("already been consumed")
+    );
+}
+
+#[tokio::test]
+async fn ordinary_bodies_still_buffer_exactly_as_before() {
+    let app = app(|builder| {
+        builder.post(
+            "/json",
+            handler(|req: Request| async move {
+                let payload: CreateUser = req.bind_json()?;
+                Ok(Message::data(json!({ "name": payload.name })))
+            }),
+        );
+        builder.get(
+            "/raw",
+            handler(|req: Request| async move {
+                Ok(Response::json(json!({
+                    "buffered": req.body().is_some(),
+                    "length": req.body().map(|b| b.len()).unwrap_or(0),
+                })))
+            }),
+        );
+    })
+    .await;
+
+    let (status, json) = call(
+        &app,
+        post_json("/json", json!({"name": "alice", "age": 30})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["data"]["name"], "alice");
+
+    let (_, json) = call(&app, get("/raw")).await;
+    assert_eq!(json["buffered"], true);
+    assert_eq!(json["length"], 0);
+}
+
 // --------------------------------------------------------------- controllers
 
 #[derive(Default)]
