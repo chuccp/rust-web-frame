@@ -239,6 +239,16 @@ impl Context {
         self.must_service::<T>()
     }
 
+    /// The name a component of this type was registered under, if any.
+    pub(crate) fn registered_name(&self, type_id: TypeId) -> Option<&'static str> {
+        self.inner
+            .registry
+            .read()
+            .expect("registry poisoned")
+            .get(&type_id)
+            .map(|entry| entry.name)
+    }
+
     /// Reports whether a component of this type has been registered.
     pub fn contains<T: Send + Sync + 'static>(&self) -> bool {
         self.inner

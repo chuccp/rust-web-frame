@@ -8,7 +8,7 @@ use super::service::{
     InitFn, Rest, Runner, Service, WireFn, Wired, filter_init, init_failed, rest_init, runner_init,
     service_init, wire_converter, wire_filter, wire_runner, wire_service,
 };
-use crate::web::{Converter, Filter, Result};
+use crate::web::{Converter, Error, Filter, Result};
 
 /// One component, as registered but not yet initialised.
 ///
@@ -143,6 +143,16 @@ pub(crate) async fn init_all(
         let (value, roles) = registration.init(ctx).await?;
 
         // Register under the type the caller wrote, so `ctx.service::<T>()` finds it.
+        //
+        // The container keys by type, so a second registration of the same type would
+        // replace the first — leaving one instance in the container and a *different*
+        // one wired into the filter chain. Anything read back would then be a copy that
+        // never runs. Refuse instead of picking one silently.
+        if let Some(previous) = ctx.registered_name(type_id) {
+            return Err(Error::new(500, format!("{name} is registered twice")).detail(format!(
+                "{name} is registered twice: it was already registered as {previous}. A component is registered once — a filter, runner or controller is already a service, so registering it with `filter(...)` is enough and a second `service(...)` call would only create a copy that nothing ever calls."
+            )));
+        }
         ctx.register_dyn(type_id, name, value);
         if let Some(filter) = roles.filter {
             wired.filters.push(filter);
@@ -177,6 +187,28 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct First(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl Service for First {
+        async fn init(&self, _ctx: &Context) -> Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct Second(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl Service for Second {
+        async fn init(&self, _ctx: &Context) -> Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
     struct Broken;
 
     #[async_trait]
@@ -187,14 +219,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn components_are_initialised_in_order_and_become_visible_as_they_land() {
+    async fn components_are_initialised_in_order() {
         let ctx = Context::empty();
         let seen = Arc::new(AtomicUsize::new(0));
 
         let wired = init_all(
             vec![
-                Registration::service(Counted(seen.clone())),
-                Registration::service(Counted(seen.clone())),
+                Registration::service(First(seen.clone())),
+                Registration::service(Second(seen.clone())),
             ],
             &ctx,
         )
@@ -204,10 +236,44 @@ mod tests {
         assert_eq!(seen.load(Ordering::SeqCst), 2);
         assert!(wired.filters.is_empty());
         assert!(wired.runners.is_empty());
+        assert_eq!(ctx.registered_names().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn registering_the_same_type_twice_is_refused() {
+        // Regression: the container keys by type, so a second registration used to
+        // replace the first — leaving one instance in the container and a *different*
+        // one wired into the filter chain. Anything read back was a copy that never ran.
+        let ctx = Context::empty();
+        let error = match init_all(
+            vec![
+                Registration::service(Counted(Arc::new(AtomicUsize::new(0)))),
+                Registration::service(Counted(Arc::new(AtomicUsize::new(0)))),
+            ],
+            &ctx,
+        )
+        .await
+        {
+            Ok(_) => panic!("a duplicate registration must be refused"),
+            Err(error) => error,
+        };
+
+        // `message` is the summary; `detail` (what reaches a client) carries the guidance.
+        assert!(
+            error.message.contains("registered twice"),
+            "{}",
+            error.message
+        );
+        let detail = error.client_message();
+        assert!(detail.contains("registered twice"), "{detail}");
+        assert!(
+            detail.contains("filter"),
+            "the message should point out that a filter is already a service: {detail}"
+        );
         assert_eq!(
             ctx.registered_names().len(),
             1,
-            "both registrations share one type"
+            "the first registration stays; nothing is replaced"
         );
     }
 

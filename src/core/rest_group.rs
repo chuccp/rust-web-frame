@@ -68,19 +68,37 @@ impl RestGroup {
         self.registrations
     }
 
-    /// Reads a group from the `web.restGroups.<name>` section of the config, so a port
-    /// can be changed without a rebuild.
+    /// Reads a group from the `web.restGroups.<name>` section of the config, so a
+    /// deployment can move a port or a context path without a rebuild.
+    ///
+    /// The section is **merged** over what the code asked for rather than replacing it:
+    /// a section that names only `port` must not silently reset `contextPath` and
+    /// everything else to its default.
     pub(crate) fn apply_config(&mut self, config: &crate::config::Config) {
-        let key = format!("web.restGroups.{}", self.name);
-        if config.contains_key(&key)
-            && let Ok(overrides) = config.section::<ServerConfig>(&key)
-        {
-            let port = overrides.port;
-            self.server_config = overrides;
-            if self.server_config.port == 0 {
-                self.server_config.port = port;
+        let key = format!("{REST_GROUPS_CONFIG_KEY}.{}", self.name);
+        let Some(overrides) = config.get(&key) else {
+            return;
+        };
+
+        let mut merged = serde_json::to_value(&self.server_config).unwrap_or_default();
+        crate::value::merge(&mut merged, overrides.clone());
+
+        match serde_json::from_value::<ServerConfig>(merged) {
+            Ok(server_config) => {
+                self.server_config = server_config;
+                tracing::debug!(
+                    group = %self.name,
+                    port = self.server_config.port,
+                    contextPath = %self.server_config.context_path,
+                    "rest group configured"
+                );
             }
-            tracing::debug!(group = %self.name, port = self.server_config.port, "rest group configured");
+            // Silently ignoring a malformed section is how a typo becomes a mystery.
+            Err(err) => tracing::warn!(
+                group = %self.name,
+                error = %err,
+                "ignoring the `{key}` config section, it does not fit a server config"
+            ),
         }
     }
 }
@@ -202,27 +220,30 @@ where
     }
 }
 
-/// Validates that no two groups claim the same port.
+/// Validates that no two servers claim the same port.
+///
+/// Runs after the config overrides have been applied, so a config file that collides with
+/// the code is caught at startup rather than at bind time.
 pub(crate) fn ensure_distinct_ports(groups: &[RestGroup], default_port: u16) -> Result<()> {
     let mut seen = vec![default_port];
     for group in groups {
-        if group.port() == 0 {
+        let port = group.port();
+        if port == 0 {
             return Err(Error::new(
                 500,
                 format!("rest group `{}` has no port", group.name()),
             ));
         }
-        if seen.contains(&group.port()) {
+        if seen.contains(&port) {
             return Err(Error::new(
                 500,
                 format!(
-                    "rest group `{}` and another server both claim port {}",
-                    group.name(),
-                    group.port()
+                    "rest group `{}` and another server both claim port {port}",
+                    group.name()
                 ),
             ));
         }
-        seen.push(group.port());
+        seen.push(port);
     }
     Ok(())
 }
@@ -283,5 +304,46 @@ mod tests {
         group.apply_config(&config);
         assert_eq!(group.port(), 9091);
         assert_eq!(group.server_config().context_path, "/admin");
+    }
+
+    #[test]
+    fn a_config_section_merges_over_the_programmatic_settings() {
+        // Regression: the override used to replace the whole `ServerConfig`, so a section
+        // naming only `port` silently reset the context path the code had asked for.
+        let mut group = RestGroup::builder("admin")
+            .server_config(ServerConfig::on_port(8081).with_context_path("/admin"))
+            .build();
+
+        let config = crate::config::Config::from_value(serde_json::json!({
+            "web": {"restGroups": {"admin": {"port": 9091}}}
+        }));
+        group.apply_config(&config);
+
+        assert_eq!(group.port(), 9091, "the config wins for the key it names");
+        assert_eq!(
+            group.server_config().context_path,
+            "/admin",
+            "a key the section does not name keeps what the code asked for"
+        );
+    }
+
+    #[test]
+    fn a_group_with_no_config_section_is_untouched() {
+        let mut group = RestGroup::builder("admin")
+            .server_config(ServerConfig::on_port(8081).with_context_path("/admin"))
+            .build();
+        group.apply_config(&crate::config::Config::empty());
+        assert_eq!(group.port(), 8081);
+        assert_eq!(group.server_config().context_path, "/admin");
+    }
+
+    #[test]
+    fn a_malformed_section_leaves_the_group_alone() {
+        let mut group = RestGroup::builder("admin").port(8081).build();
+        let config = crate::config::Config::from_value(serde_json::json!({
+            "web": {"restGroups": {"admin": {"port": "not a number"}}}
+        }));
+        group.apply_config(&config);
+        assert_eq!(group.port(), 8081);
     }
 }

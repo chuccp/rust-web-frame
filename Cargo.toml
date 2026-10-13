@@ -64,4 +64,6 @@ mysql = ["sea-orm/sqlx-mysql"]
 postgres = ["sea-orm/sqlx-postgres"]
 
 [dev-dependencies]
+futures-util = "0.3"
 tempfile = "3"
+tokio-tungstenite = "0.30.0"

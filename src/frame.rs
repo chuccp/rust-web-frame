@@ -342,7 +342,6 @@ impl WebFrame {
         log::init_logger(resolve_log_config(&self.config, self.logging));
 
         let default_config = crate::core::default_server_config(&self.config);
-        crate::core::ensure_distinct_ports(&self.rest_groups, default_config.port)?;
 
         // The default server exists before the context, so controllers can register
         // routes on it while they initialise.
@@ -367,16 +366,17 @@ impl WebFrame {
             group.group.init(&context, group.auto_create_table).await?;
         }
 
-        let mut servers = vec![Arc::clone(&default_server)];
-        let mut rest_group_contexts = Vec::with_capacity(self.rest_groups.len());
-        for mut group in self.rest_groups {
+        // Override from the config *before* checking the ports, or a config that moves
+        // two groups onto the same port goes unnoticed.
+        let mut rest_groups = self.rest_groups;
+        for group in &mut rest_groups {
             group.apply_config(&self.config);
-            if group.port() == default_config.port {
-                return Err(crate::web::Error::new(
-                    500,
-                    format!("rest group `{}` reuses the default port", group.name()),
-                ));
-            }
+        }
+        crate::core::ensure_distinct_ports(&rest_groups, default_config.port)?;
+
+        let mut servers = vec![Arc::clone(&default_server)];
+        let mut rest_group_contexts = Vec::with_capacity(rest_groups.len());
+        for group in rest_groups {
             let server = Arc::new(Server::new(group.server_config().clone()));
             servers.push(Arc::clone(&server));
             rest_group_contexts.push((group, Arc::clone(&server), context.with_server(server)));
