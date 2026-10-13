@@ -143,14 +143,24 @@ jobs:
           fi
           git diff --stat
 
+      # Committed either way, pushed only when `main` is the one that needs it. The commit
+      # is not only how the version reaches `main`: it is also what makes the tree *clean*,
+      # and `cargo publish` refuses to publish from a working tree with changes in it — on a
+      # re-run the version written above is exactly that.
       - name: Commit the version
-        if: steps.version.outputs.commit == 'true'
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add Cargo.toml Cargo.lock
-          git commit -m "chore(release): $GITHUB_REF_NAME"
-          git push origin HEAD:main
+          if git diff --cached --quiet; then
+            echo "nothing to commit: this tree already carries $GITHUB_REF_NAME"
+          else
+            git commit -m "chore(release): $GITHUB_REF_NAME"
+          fi
+
+      - name: Push the version to main
+        if: steps.version.outputs.commit == 'true'
+        run: git push origin HEAD:main
 
       # `--notes-from-tag` rather than the Go workflow's generated notes: the tags in this
       # repository carry their own release notes, which is what v0.1.0's release shows.
