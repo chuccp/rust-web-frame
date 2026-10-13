@@ -1,6 +1,6 @@
 # rust-web-frame
 
-**Declare policy on the route, not in the handler. Tag a route with `.with_meta(...)` — auth, permissions, rate limits — and one filter enforces it for every route that opted in. A generic ORM included.**
+**Declare policy on the route, not in the handler. Tag a route with `.with_meta(...)` — auth, permissions, rate limits — and one filter enforces it for every route that opted in.**
 
 A Rust port of [go-web-frame](https://github.com/chuccp/go-web-frame)'s design, built on
 [axum](https://docs.rs/axum) + [sea-orm](https://docs.rs/sea-orm) the way the original is
@@ -73,78 +73,95 @@ forget the check. See [`examples/withmeta.rs`](examples/withmeta.rs) for the who
 | `req.handler_meta()` | filter / handler | The underlying `HandlerMeta` (`get`, `contains_key`, …). |
 | `req.set_attr` / `req.attr::<T>` | filter → handler | Pass request-scoped data down the chain. |
 
-### 2. A generic model that erases CRUD boilerplate
+### 2. Queries stay sea-orm's
 
-Write the entity once; `define_model!` produces a typed model with every query method:
+The framework does not add a query language. It binds an entity to a connection, derives
+the table from the entity, and puts it in the container — then gets out of the way:
 
 ```rust
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
-#[sea_orm(table_name = "t_user")]
+#[sea_orm(table_name = "t_user")]          // the table name lives here, and nowhere else
 pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i64,
     pub email: String,
-    pub name: String,
     pub age: i32,
 }
 
-define_model!(UserModel, Entity, "t_user");
+define_model!(
+    /// Users of the shop.
+    UserModel,
+    Entity
+);
+
+impl UserModel {
+    /// Business logic sits next to the entity it works on, written in sea-orm.
+    pub async fn register(&self, email: &str, age: i32) -> Result<Model> {
+        Ok(ActiveModel {
+            email: Set(email.to_owned()),
+            age: Set(age),
+            ..Default::default()
+        }
+        .insert(self.db())
+        .await?)
+    }
+
+    /// A transfer, atomically. `db()` is the pool outside the closure and the
+    /// transaction inside it, so the same methods run either way.
+    pub async fn transfer(&self, from: i64, to: i64, amount: i64) -> Result<()> {
+        self.db()
+            .clone()
+            .transaction(|tx| {
+                let accounts = self.with_db(tx);
+                async move { /* sea-orm queries against accounts.db() */ Ok(()) }
+            })
+            .await
+    }
+}
 ```
 
-That is the whole model. Now use it anywhere:
+And in a handler, it is sea-orm's API with a connection handed to it:
 
 ```rust
-let users = UserModel::new(db);
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 
-users.create_table().await?;                       // derives the schema from the entity
-let user  = users.find_by_pk(1).await?;            // Option<user::Model>
-let all   = users.find_all().await?;               // Vec<user::Model>
-let adults = users.query()
-    .filter("age >= ?", args![18])
-    .order_by_desc("age")
-    .list(50)
+let users = req.context().service::<UserModel>()?;
+
+// typed columns, checked by the compiler
+let adults = user::Entity::find()
+    .filter(user::Column::Age.gte(18))
+    .order_by_desc(user::Column::Id)
+    .all(users.db())
     .await?;
-let total = users.query().filter("age >= ?", args![18]).count().await?;
-let (rows, total) = users.page(&Page::new(1, 10)).await?;
-let paged = users.paged(&Page::new(1, 10)).await?;   // { total, items }
 
-users.update().by_pk(1).set("name", "bob").execute().await?;
-users.delete_by_pk(1).await?;
-```
-
-**String conditions, bound parameters.** `filter("age > ?", args![18])` reads the way the
-Go original's `Where("age > ?", 18)` does. `?` is understood by every backend — sea-query
-rewrites it to `$1` for PostgreSQL — so there is no SQL injection surface and no
-per-dialect code.
-
-**Aggregates.** `SUM`, `COUNT`, `AVG`, `GROUP BY`, `HAVING`:
-
-```rust
-#[derive(sea_orm::FromQueryResult)]
-struct CityStat { city: String, total: Option<i64> }
-
-let stats = orders.aggregate()
-    .select("city, SUM(amount) AS total")
-    .group_by("city")
-    .having("SUM(amount) > ?", args![200])
-    .rows::<CityStat>()
+// an aggregate, written the way sea-orm writes them
+let stats = user::Entity::find()
+    .select_only()
+    .column_as(user::Column::Id.count(), "users")
+    .column_as(user::Column::Balance.sum(), "total")
+    .into_model::<Stats>()
+    .one(users.db())
     .await?;
 
-let sum: Option<f64> = orders.aggregate().select("SUM(amount)").value().await?;
+// one page, in the framework's response envelope
+let paged = users
+    .page(user::Entity::find().filter(user::Column::Age.gte(18)), &page)
+    .await?;
 ```
 
-**Transactions that keep the model API.** The closure receives a `Database` handle, so models
-built from it participate in the transaction:
+`filter(Column::Age.gte(18))` is checked at the call site, so a renamed column is a compile
+error rather than a runtime one — which a string condition like `"age > ?"` can never be.
+Everything sea-orm documents applies as written: `find_with_related`, `paginate`,
+`update_many`, `from_raw_sql`, `DerivePartialModel`, migrations, `sea-orm-cli`-generated
+entities.
 
-```rust
-db.transaction(|tx| async move {
-    let accounts = AccountModel::new(tx);
-    accounts.update().by_pk(from).set("balance", lower).execute().await?;
-    accounts.update().by_pk(to).set("balance", higher).execute().await?;
-    Ok(())                       // Ok commits, Err rolls back
-})
-.await?;
-```
+What the layer adds is exactly three things sea-orm cannot know about:
+
+| | |
+|---|---|
+| **A connection that is a pool *or* a transaction** | `Database` is a handle, so `model.db()` works on both sides of `transaction()` without changing shape. |
+| **Schema from the entity** | `model.create_table()` asks sea-orm's `Schema` to derive `CREATE TABLE` from the entity. |
+| **A place in the container** | `builder.model(...)` registers it, `ctx.service::<UserModel>()` retrieves it, and the table is created at startup. |
 
 ### 3. One lifecycle
 
@@ -353,7 +370,7 @@ since the body holds files rather than JSON.
 | **Ops** | access log (one line per request, at `debug`), panic isolation with the standard 500 envelope, graceful shutdown with a bounded runner grace |
 | **Uploads** | `MultipartForm`, `UploadedFile`, `sanitise_file_name`, streamed and spilling to temp files |
 | **Extensibility** | `Filter`, `Converter`, `Runner`, `Rest`, `Service` |
-| **Data** | `db::Database`, `db::transaction`, `Model<E>`, `define_model!`, `ModelGroup`, `Transaction` |
+| **Data** | `db::Database` (pool *or* transaction), `db::transaction`, `Model<E>`, `define_model!`, `ModelGroup` — queries themselves are [sea-orm](https://docs.rs/sea-orm)'s |
 | **Pagination** | `Page`, `Paged<T>` |
 | **Components** | `Service`, `Rest`, `Filter`, `Runner`, `Converter`, `Context`, `RestGroup`, `Runtime`, `Builder` |
 
@@ -434,11 +451,9 @@ The design is the same; the language forces a few honest changes.
 | `c.Query("page")` | `req.query("page") -> Option<&str>` | Absence is in the type; `query_or`, `query_i64` cover the ergonomic cases. |
 | `Query.One()` returns a zero value + nil error | `query().one() -> Result<Option<T>>` | The type answers "did I find anything?". `get_by_pk` returns `404` instead. |
 | `Model.Save(&user)` (upsert) | `insert(am)`, `update_by_pk(am)` | Two operations, two methods; no hidden branch on whether the key is set. |
-| `Model[T]` + `EntryModel[T, PK]` | one `Model<E>` | The split exists because Go models can lack a primary key; every sea-orm entity has one, so the second type bought nothing. |
+| A `Model[T]` / `EntryModel[T, PK]` wrapper *around* GORM | `Model<E>` bound *to* sea-orm | The Go layer exists to give GORM generics and a PK-aware API. sea-orm already has both, so wrapping it again would only hide it. |
+| `Query.Where("age > ?", 18)` | `filter(Column::Age.eq(18))` | Typed columns are checked at the call site; a string condition can only fail at runtime. |
 | Embedding `*model.EntryModel[T, PK]` | `define_model!` → `Deref<Target = Model<E>>` | The macro writes the embedding Rust cannot. |
-| `Query.Where("age > ?", 18)` | `query.filter("age > ?", args![18])` | `where` is a Rust keyword, and every crate that needs to filter calls it `filter`. |
-| `Query.IsExist()` | `exists()` | Boolean names read as predicates. |
-| `PageForWeb()` | `paged()` | — |
 | `Viper.UnmarshalKey` | `config.section::<T>("web.server")` | Deserialising a config section is not "unmarshalling a key". |
 | `Message{code, data, msg, type}` | `Message{code, data, message, kind}` (serde renames keep the wire format) | `type` is a keyword, and `msg` is an abbreviation. |
 | `PageAble.List` | `Paged.items` (serialised as `list`) | — |

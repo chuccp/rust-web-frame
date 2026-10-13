@@ -82,8 +82,9 @@ impl Runtime {
     /// Serves every port until the context is cancelled, or until a server fails.
     ///
     /// Background runners are spawned first. On shutdown they are given
-    /// [`SHUTDOWN_GRACE`] to notice the cancellation and return; anything still running
-    /// after that is abandoned with a warning rather than blocking the process forever.
+    /// `SHUTDOWN_GRACE` (5 s) to notice the cancellation and return; anything still
+    /// running after that is abandoned with a warning rather than blocking the process
+    /// forever.
     pub async fn run(self) -> Result<()> {
         let mut tasks: JoinSet<Result<()>> = JoinSet::new();
 

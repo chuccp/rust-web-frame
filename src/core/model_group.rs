@@ -5,8 +5,7 @@ use std::sync::Arc;
 
 use crate::db::Database;
 use crate::model::Table;
-use crate::model::Transaction;
-use crate::web::{Error, Result, code};
+use crate::web::Result;
 
 use super::context::Context;
 
@@ -34,7 +33,7 @@ struct Registered {
 /// # pub struct Model { #[sea_orm(primary_key)] pub id: i64, pub name: String }
 /// # #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)] pub enum Relation {}
 /// # impl ActiveModelBehavior for ActiveModel {}
-/// # define_model!(UserModel, Entity, "t_user");
+/// # define_model!(UserModel, Entity);
 /// # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
 /// let db = connect(&DbConfig::sqlite("./data.db")).await?;
 /// let users = UserModel::new(db.clone());
@@ -135,17 +134,6 @@ impl ModelGroup {
             type_id: TypeId::of::<M>(),
             name: std::any::type_name::<M>(),
         });
-    }
-
-    /// A transaction manager over the group's connection.
-    pub fn transaction(&self) -> Result<Transaction> {
-        let db = self.db.clone().ok_or_else(|| {
-            Error::new(
-                code::INTERNAL_ERROR,
-                format!("model group `{}` has no database", self.name),
-            )
-        })?;
-        Ok(Transaction::new(db))
     }
 }
 
@@ -264,7 +252,7 @@ mod tests {
 
     impl ActiveModelBehavior for ActiveModel {}
 
-    define_model!(WidgetModel, Entity, "t_widget");
+    define_model!(WidgetModel, Entity);
 
     #[tokio::test]
     async fn a_group_prepares_and_registers_its_models() {
@@ -279,9 +267,15 @@ mod tests {
 
         let widgets = ctx.service::<WidgetModel>().unwrap();
         assert_eq!(widgets.table_name(), "t_widget");
-        assert!(widgets.exists().await.unwrap());
+        assert!(
+            crate::model::has_table(widgets.db(), "t_widget")
+                .await
+                .unwrap()
+        );
         assert_eq!(group.model_names().len(), 1);
     }
+
+    use sea_orm::EntityTrait;
 
     #[tokio::test]
     async fn auto_create_table_can_be_turned_off() {
@@ -293,12 +287,13 @@ mod tests {
         let ctx = Context::empty();
         group.init(&ctx, false).await.unwrap();
         // No table was created, so a query fails.
-        assert!(ctx.service::<WidgetModel>().unwrap().count().await.is_err());
+        let widgets = ctx.service::<WidgetModel>().unwrap();
+        assert!(widgets.count(Entity::find()).await.is_err());
     }
 
     #[tokio::test]
-    async fn transactions_require_a_database() {
+    async fn a_group_without_a_database_reports_it() {
         let group = ModelGroup::builder("empty").build();
-        assert!(group.transaction().is_err());
+        assert!(group.db().is_none());
     }
 }

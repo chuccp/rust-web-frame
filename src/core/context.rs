@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
 use crate::db::Database;
-use crate::model::{Page, Transaction};
+use crate::model::Page;
 use crate::web::Server as WebServer;
 use crate::web::{
     Error, Handler, Request, Response, Result, RouteHandle, ServerConfig, SseStream,
@@ -264,8 +264,8 @@ impl Context {
 
     // ------------------------------------------------------------ database
 
-    /// Records the application's default database, so [`transaction`](Self::transaction)
-    /// and [`db`](Self::db) work without a model group.
+    /// Records the application's default database, so [`db`](Self::db) works without a
+    /// model group.
     pub fn set_database(&self, db: Database) {
         *self.inner.database.write().expect("database poisoned") = Some(db);
     }
@@ -290,11 +290,6 @@ impl Context {
             .read()
             .expect("database poisoned")
             .clone()
-    }
-
-    /// A transaction manager over the default database.
-    pub fn transaction(&self) -> Result<Transaction> {
-        Ok(Transaction::new(self.db()?))
     }
 
     // -------------------------------------------------------------- routing
@@ -513,6 +508,5 @@ mod tests {
         let db = crate::db::connect_memory().await.unwrap();
         ctx.set_database(db);
         assert!(ctx.db().is_ok());
-        assert!(ctx.transaction().is_ok());
     }
 }

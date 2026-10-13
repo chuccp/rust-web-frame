@@ -56,12 +56,20 @@ impl Page {
         }
     }
 
-    /// The `LIMIT` to send to the database.
-    pub fn limit(&self) -> i64 {
-        self.with_defaults().page_size
+    /// Rows per page, never zero — the argument sea-orm's `paginate` wants.
+    #[must_use]
+    pub fn page_size(&self) -> u64 {
+        self.with_defaults().page_size.max(1) as u64
     }
 
-    /// The `OFFSET` to send to the database.
+    /// The page as sea-orm counts them: `fetch_page` is 0-based.
+    #[must_use]
+    pub fn page_index(&self) -> u64 {
+        (self.with_defaults().page_no.max(1) - 1) as u64
+    }
+
+    /// The `OFFSET` this page starts at.
+    #[must_use]
     pub fn offset(&self) -> i64 {
         let page = self.with_defaults();
         (page.page_no - 1) * page.page_size
@@ -127,7 +135,16 @@ mod tests {
     fn offsets_are_zero_based() {
         assert_eq!(Page::new(1, 20).offset(), 0);
         assert_eq!(Page::new(3, 20).offset(), 40);
-        assert_eq!(Page::new(3, 20).limit(), 20);
+    }
+
+    #[test]
+    fn sea_orm_needs_a_size_and_a_zero_based_index() {
+        assert_eq!(Page::new(1, 20).page_index(), 0);
+        assert_eq!(Page::new(3, 20).page_index(), 2);
+        assert_eq!(Page::new(3, 20).page_size(), 20);
+        // Never zero, or `paginate` would divide by it.
+        assert_eq!(Page::new(1, 0).page_size(), DEFAULT_PAGE_SIZE as u64);
+        assert_eq!(Page::new(0, 20).page_index(), 0);
     }
 
     #[test]

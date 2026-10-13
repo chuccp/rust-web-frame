@@ -54,7 +54,7 @@ src/
     multipart.rs    MultipartForm, UploadedFile, streamed parsing, temp-file spilling
     file.rs sse.rs ws.rs
   model/          the ORM layer
-    mod.rs          Model<E>, TableEntity/Table, define_model!, Transaction
+    mod.rs          Model<E>, TableEntity/Table, define_model!, has_table
     query.rs        Query<E>, Update<E>, Delete<E>, Aggregate<E>
   db/             Database (pool *or* transaction), DbConfig, connect, transaction
   config/         Config — dotted-key lookup, auto-loading, deep merge
@@ -170,23 +170,31 @@ construction.
 
 ### The model layer (`model/`)
 
-`Model<E>` carries both the plain CRUD and the primary-key shortcuts. The Go original
-splits them into `Model[T]` and `EntryModel[T, PK]` because its models may lack a key;
-every sea-orm entity has one, so the split bought nothing here.
+**Queries are sea-orm's. Do not add a query language on top of it.** `Model<E>` holds a
+`Database` and offers only what sea-orm's entity API cannot express on its own:
+
+* `new` / `db` / `with_db` — the handle, and the same handle bound to a transaction.
+* `table_name` — from the entity's `#[sea_orm(table_name = "…")]`. The table name is
+  deliberately *not* a constructor argument: keeping it in two places is how they drift.
+* `create_table` / `drop_table` — schema derived from the entity by sea-orm's `Schema`.
+* `page(select, &Page)` / `count(select)` — a sea-orm `Select` in, the framework's
+  `Paged<T>` out. Both take sea-orm's type, so filters compose the normal way.
+
+There is no `Query`/`Update`/`Delete`/`Aggregate` builder, and adding one back is the thing
+to avoid: an earlier version had all four (~700 lines) and they were strictly worse than
+what sea-orm already ships — string conditions that fail at runtime instead of compile
+time, string column names, and a `Query::execute(sql)` that appended `AND …` without a
+`WHERE`. If something seems missing, check whether sea-orm has it first; it usually does.
 
 `define_model!` writes the newtype + `Deref` + `TableEntity` impl that Rust cannot express
-as embedding. `TableEntity` (the entity-facing trait: `type Entity`, `as_model()`) gets
-`Table` (the object-safe one `ModelGroup` stores) for free via a blanket impl — the split
-exists because `dyn Table` cannot name an unspecified associated type.
+as embedding. `TableEntity` (entity-facing: `type Entity`, `model()`) gets `Table` (the
+object-safe trait `ModelGroup` stores) for free via a blanket impl — the split exists
+because `dyn Table` cannot name an unspecified associated type.
 
-Conditions are SQL fragments with `?` placeholders — never string-interpolated values.
-`Query::build` composes them through `Expr::cust_with_values`, which sea-query rewrites
-per dialect. Column names in `order`/`group_by`/`where_eq` go through `is_plain_column` so
-plain identifiers are quoted and anything else is passed through as an expression.
-
-Counting is done by `count_rows`, which wraps the query in
-`SELECT COUNT(*) FROM (…) AS sub_query`. sea-orm's `Paginator::count` requires
-`E::Model: Sync`, a bound the generic layer would have to push onto every caller.
+`Model::page`/`count` need `where E::Model: Send + Sync`, because sea-orm's
+`PaginatorTrait` is implemented for `Select<E>` only when the entity's model is `Sync`.
+That bound is on the two methods rather than on `impl<E: EntityTrait> Model<E>`, so it does
+not leak into `create_table` and friends.
 
 ### `db::Database`
 

@@ -1,6 +1,6 @@
 # rust-web-frame
 
-**把策略声明在路由上，而不是散落在 handler 里。用 `.with_meta(...)` 给路由打标签——鉴权、权限、限流——一个 filter 为所有"声明过"的路由统一执法。自带泛型 ORM。**
+**把策略声明在路由上，而不是散落在 handler 里。用 `.with_meta(...)` 给路由打标签——鉴权、权限、限流——一个 filter 为所有"声明过"的路由统一执法。**
 
 这是 [go-web-frame](https://github.com/chuccp/go-web-frame) 设计思路的 Rust 版本，与原版
 「建在 Gin + GORM 之上」一样，它建在 [axum](https://docs.rs/axum) + [sea-orm](https://docs.rs/sea-orm) 之上。
@@ -70,77 +70,91 @@ impl Filter for AuthFilter {
 | `req.handler_meta()` | filter / handler | 底层的 `HandlerMeta`（`get`、`contains_key` 等）。 |
 | `req.set_attr` / `req.attr::<T>` | filter → handler | 沿链条向下传递请求级数据。 |
 
-### 2. 消除 CRUD 样板代码的泛型 Model
+### 2. 查询就是 sea-orm
 
-实体写一次；`define_model!` 生成一个带全部查询方法的强类型 model：
+框架不另造一套查询语言。它把实体绑到连接上、从实体推导表名、把它放进容器——然后让开：
 
 ```rust
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
-#[sea_orm(table_name = "t_user")]
+#[sea_orm(table_name = "t_user")]          // 表名只在这里，不在别处
 pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i64,
     pub email: String,
-    pub name: String,
     pub age: i32,
 }
 
-define_model!(UserModel, Entity, "t_user");
+define_model!(
+    /// 商城的用户。
+    UserModel,
+    Entity
+);
+
+impl UserModel {
+    /// 业务逻辑就写在它操作的那个实体旁边，用 sea-orm 写。
+    pub async fn register(&self, email: &str, age: i32) -> Result<Model> {
+        Ok(ActiveModel {
+            email: Set(email.to_owned()),
+            age: Set(age),
+            ..Default::default()
+        }
+        .insert(self.db())
+        .await?)
+    }
+
+    /// 原子转账。`db()` 在闭包外是连接池、闭包内是事务，同一套方法两边都能跑。
+    pub async fn transfer(&self, from: i64, to: i64, amount: i64) -> Result<()> {
+        self.db()
+            .clone()
+            .transaction(|tx| {
+                let accounts = self.with_db(tx);
+                async move { /* 用 accounts.db() 跑 sea-orm 查询 */ Ok(()) }
+            })
+            .await
+    }
+}
 ```
 
-这就是 model 的全部。然后到处都能用：
+在 handler 里就是把连接交给 sea-orm 的原生 API：
 
 ```rust
-let users = UserModel::new(db);
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 
-users.create_table().await?;                       // 从实体推导建表语句
-let user  = users.find_by_pk(1).await?;            // Option<user::Model>
-let all   = users.find_all().await?;               // Vec<user::Model>
-let adults = users.query()
-    .filter("age >= ?", args![18])
-    .order_by_desc("age")
-    .list(50)
+let users = req.context().service::<UserModel>()?;
+
+// 类型化的列，编译期检查
+let adults = user::Entity::find()
+    .filter(user::Column::Age.gte(18))
+    .order_by_desc(user::Column::Id)
+    .all(users.db())
     .await?;
-let total = users.query().filter("age >= ?", args![18]).count().await?;
-let (rows, total) = users.page(&Page::new(1, 10)).await?;
-let paged = users.paged(&Page::new(1, 10)).await?;   // { total, list }
 
-users.update().by_pk(1).set("name", "bob").execute().await?;
-users.delete_by_pk(1).await?;
-```
-
-**字符串条件 + 绑定参数。** `Where("age > ?", 18)` 的写法与 Go 原版完全一致。`?` 是所有后端
-都认识的占位符——sea-query 会为 PostgreSQL 改写成 `$1`——所以既没有 SQL 注入面，也不用为
-每种方言写代码。
-
-**聚合查询。** `SUM`、`COUNT`、`AVG`、`GROUP BY`、`HAVING`：
-
-```rust
-#[derive(sea_orm::FromQueryResult)]
-struct CityStat { city: String, total: Option<i64> }
-
-let stats = orders.aggregate()
-    .select("city, SUM(amount) AS total")
-    .group_by("city")
-    .having("SUM(amount) > ?", args![200])
-    .rows::<CityStat>()
+// 聚合，就按 sea-orm 的写法
+let stats = user::Entity::find()
+    .select_only()
+    .column_as(user::Column::Id.count(), "users")
+    .column_as(user::Column::Balance.sum(), "total")
+    .into_model::<Stats>()
+    .one(users.db())
     .await?;
 
-let sum: Option<f64> = orders.aggregate().select("SUM(amount)").value().await?;
+// 一页数据，装进框架的响应信封
+let paged = users
+    .page(user::Entity::find().filter(user::Column::Age.gte(18)), &page)
+    .await?;
 ```
 
-**事务里仍是同一套 model API。** 闭包拿到的是一个 `Database` 句柄，由它构造的 model 都参与
-这个事务：
+`filter(Column::Age.gte(18))` 在调用处就被检查——改个列名是**编译错误**而不是运行时错误，这是
+`"age > ?"` 这种字符串条件永远做不到的。sea-orm 文档里写的一切原样适用：`find_with_related`、
+`paginate`、`update_many`、`from_raw_sql`、`DerivePartialModel`、迁移、`sea-orm-cli` 生成的实体。
 
-```rust
-db.transaction(|tx| async move {
-    let accounts = AccountModel::new(tx);
-    accounts.update().by_pk(from).set("balance", lower).execute().await?;
-    accounts.update().by_pk(to).set("balance", higher).execute().await?;
-    Ok(())                       // Ok 提交，Err 回滚
-})
-.await?;
-```
+这一层只加了三件 sea-orm 不可能知道的事：
+
+| | |
+|---|---|
+| **既是连接池又是事务的连接** | `Database` 是句柄，所以 `model.db()` 在 `transaction()` 内外形状一致。 |
+| **从实体建表** | `model.create_table()` 让 sea-orm 的 `Schema` 从实体推导 `CREATE TABLE`。 |
+| **在容器里的位置** | `builder.model(...)` 注册，`ctx.service::<UserModel>()` 取出，启动时自动建表。 |
 
 ### 3. 一套生命周期
 
@@ -342,7 +356,7 @@ panic 会被兜住：客户端拿到标准 `500` 信封（**不会**看到 panic
 | **运维** | 访问日志（每请求一行，`debug` 级）、panic 隔离并返回标准 500 信封、带 runner 宽限期的优雅关停 |
 | **上传** | `MultipartForm`、`UploadedFile`、`sanitise_file_name`，流式解析并落临时文件 |
 | **扩展点** | `Filter`、`Converter`、`Runner`、`Rest`、`Service` |
-| **数据** | `db::Database`、`db::transaction`、`Model<E>`、`define_model!`、`ModelGroup`、`Transaction` |
+| **数据** | `db::Database`（连接池**或**事务）、`db::transaction`、`Model<E>`、`define_model!`、`ModelGroup` —— 查询本身交给 [sea-orm](https://docs.rs/sea-orm) |
 | **分页** | `Page`、`Paged<T>` |
 | **组件** | `Service`、`Rest`、`Filter`、`Runner`、`Converter`、`Context`、`RestGroup`、`Runtime`、`Builder` |
 
@@ -422,11 +436,9 @@ feature 开关：`sqlite`（默认）、`mysql`、`postgres`。
 | `c.Query("page")` | `req.query("page") -> Option<&str>` | "不存在"体现在类型里；`query_or`、`query_i64` 覆盖顺手的情况。 |
 | `Query.One()` 返回零值 + nil error | `query().one() -> Result<Option<T>>` | "有没有查到"由类型回答；`get_by_pk` 则直接返回 404。 |
 | `Model.Save(&user)`（upsert） | `insert(am)`、`update_by_pk(am)` | 两个操作两个方法，不在"主键是否设置"上藏分支。 |
-| `Model[T]` + `EntryModel[T, PK]` | 只有一个 `Model<E>` | 拆成两个是因为 Go 的 model 可以没有主键；sea-orm 的每个实体都有，第二个类型没换来任何东西。 |
+| 在 GORM **外面**包一层 `Model[T]` / `EntryModel[T, PK]` | `Model<E>` **绑到** sea-orm 上 | Go 那层是为了给 GORM 补泛型和主键 API；sea-orm 两者都有，再包一层只会把它藏起来。 |
+| `Query.Where("age > ?", 18)` | `filter(Column::Age.eq(18))` | 类型化的列在调用处就被检查；字符串条件只能到运行时才报错。 |
 | 内嵌 `*model.EntryModel[T, PK]` | `define_model!` → `Deref<Target = Model<E>>` | 用宏写出 Rust 写不出的"内嵌"。 |
-| `Query.Where("age > ?", 18)` | `query.filter("age > ?", args![18])` | `where` 是 Rust 关键字；所有需要条件过滤的 crate 都叫它 `filter`。 |
-| `Query.IsExist()` | `exists()` | 布尔语义读起来就是谓词。 |
-| `PageForWeb()` | `paged()` | —— |
 | `Viper.UnmarshalKey` | `config.section::<T>("web.server")` | "反序列化一个配置段"不叫 unmarshal key。 |
 | `Message{code, data, msg, type}` | `Message{code, data, message, kind}`（serde rename 保持线上格式） | `type` 是关键字，`msg` 是缩写。 |
 | `PageAble.List` | `Paged.items`（序列化为 `list`） | —— |

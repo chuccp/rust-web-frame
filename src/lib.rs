@@ -32,27 +32,38 @@
 //! }
 //! ```
 //!
-//! **2. A generic model that erases CRUD boilerplate.** Wrap a sea-orm entity in
-//! [`model::Model`] and the compiler checks types from the database to the handler:
+//! **2. Queries stay sea-orm's.** The framework binds the entity to a connection, derives
+//! the table from it, and puts it in the container — it does not add a query language on
+//! top. `filter(Column::Age.gte(18))` is checked by the compiler at the call site, and the
+//! sea-orm documentation applies as written:
 //!
 //! ```no_run
-//! use rust_web_frame::model::Page;
+//! use rust_web_frame::define_model;
+//! use rust_web_frame::model::{Page, Paged};
 //! # use sea_orm::entity::prelude::*;
-//! # #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
-//! # #[sea_orm(table_name = "t_user")]
-//! # pub struct Model { #[sea_orm(primary_key)] pub id: i64, pub name: String }
-//! # #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)] pub enum Relation {}
-//! # impl ActiveModelBehavior for ActiveModel {}
-//! async fn demo(db: rust_web_frame::db::Database) -> Result<(), rust_web_frame::web::Error> {
-//!     let users = rust_web_frame::model::Model::<Entity>::new(db, "t_user");
-//!     let _one = users.find_by_pk(1).await?;
-//!     let _adults = users
-//!         .query()
-//!         .filter("age > ?", rust_web_frame::args![18])
-//!         .order_by_desc("id")
-//!         .all()
+//! # pub mod user {
+//! #     use sea_orm::entity::prelude::*;
+//! #     #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+//! #     #[sea_orm(table_name = "t_user")]
+//! #     pub struct Model { #[sea_orm(primary_key)] pub id: i64, pub name: String, pub age: i32 }
+//! #     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)] pub enum Relation {}
+//! #     impl ActiveModelBehavior for ActiveModel {}
+//! # }
+//! define_model!(UserModel, user::Entity);
+//!
+//! use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+//!
+//! async fn demo(users: &UserModel, page: Page) -> Result<(), rust_web_frame::web::Error> {
+//!     let one = user::Entity::find_by_id(1i64).one(users.db()).await?;
+//!     let adults = user::Entity::find()
+//!         .filter(user::Column::Age.gte(18))
+//!         .order_by_desc(user::Column::Id)
+//!         .all(users.db())
 //!         .await?;
-//!     let (_list, _total) = users.page(&Page::new(1, 10)).await?;
+//!     let paged: Paged<user::Model> = users
+//!         .page(user::Entity::find().filter(user::Column::Age.gte(18)), &page)
+//!         .await?;
+//!     # let _ = (one, adults, paged);
 //!     Ok(())
 //! }
 //! ```
@@ -98,7 +109,7 @@ pub use frame::{Builder, WebFrame};
 pub mod prelude {
     pub use crate::core::{Context, Rest, Runner, Service};
     pub use crate::db::Database;
-    pub use crate::model::{Model, Page, Paged, TableEntity, Transaction};
+    pub use crate::model::{Model, Page, Paged, TableEntity};
     pub use crate::web::{
         Error, Filter, IntoResponse, Message, MetaOption, Request, Response, Result, handler,
     };
