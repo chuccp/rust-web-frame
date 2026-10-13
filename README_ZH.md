@@ -2,8 +2,10 @@
 
 **把策略声明在路由上，而不是散落在 handler 里。用 `.with_meta(...)` 给路由打标签——鉴权、权限、限流——一个 filter 为所有"声明过"的路由统一执法。**
 
-这是 [go-web-frame](https://github.com/chuccp/go-web-frame) 设计思路的 Rust 版本，与原版
-「建在 Gin + GORM 之上」一样，它建在 [axum](https://docs.rs/axum) + [sea-orm](https://docs.rs/sea-orm) 之上。
+建在 [axum](https://docs.rs/axum) + [sea-orm](https://docs.rs/sea-orm) 之上，配置层自己写，
+日志用 [`tracing`](https://docs.rs/tracing)。框架加在上面的是「接线」：一个 `Builder` 把
+service、controller、filter、后台 runner 装到一起，一个以类型为键的容器，让 handler 要什么
+取什么，而不是去够全局变量。
 
 **🌐 语言** · [English](README.md) • 中文
 
@@ -60,6 +62,20 @@ impl Filter for AuthFilter {
 
 保护一个新接口，就是在它的路由上加一个 `.with_meta(...)`；handler 永远没法"忘了检查"。
 完整示例见 [`examples/withmeta.rs`](examples/withmeta.rs)。
+
+但**路由**会忘：元数据是选择性加入的，什么都不带的路由等于什么都没要求，会敞着对外服务。
+guard 把这条规则声明一次，把漏配变成启动失败：
+
+```rust
+// `/admin` 下每条路由都必须带 `require_auth()`。
+ctx.require_meta("/admin", require_auth());
+```
+
+前缀下漏配的路由根本到不了 socket：
+
+```
+`/admin/settings` is under `/admin` and does not carry `require_auth` = true
+```
 
 | 调用 | 位置 | 含义 |
 |---|---|---|
@@ -212,7 +228,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## 配置
 
-配置文件搜索路径与 Go 原版一致，越靠后优先级越高：
+配置文件搜索四个位置，越靠后优先级越高：
 
 1. `/etc/<app>/config.{json,yaml,yml,toml}`
 2. `~/.<app>/config.{json,yaml,yml,toml}`
@@ -313,7 +329,8 @@ async fn upload(req: Request) -> Result<Message> {
 | `file.copy_to_dir(dir).await?` | 用**消毒后**的文件名写入，返回落盘路径 |
 | `file.temp_path()` | 落到磁盘时的临时文件路径 |
 
-`Request::save_uploaded_file(file, destination)` 对应 Go 原版的 `SaveUploadedFile`。
+`Request::save_uploaded_file(file, destination)` 把它写出去并返回写入的字节数，路径不存在
+时逐级创建——适合目标路径由应用自己决定的场景。
 
 ### 限制
 
@@ -380,6 +397,9 @@ web:
 4. 本地第一张证书（单证书部署对任意域名都能应答）
 5. 自签证书，首次使用生成并保留
 
+顺序本身就是重点：某一步永远有答案，排在它后面的每一步就永远走不到——所以自签兜底放在最后，
+它后面不再放任何还有可能申请到的东西。
+
 本地证书在文件 mtime 变化时重新读取，每五分钟检查一次——所以 certbot 续期后**不用重启**就生效，
 代价是每个文件一次 `stat`，握手路径上永远不读文件。
 
@@ -423,7 +443,7 @@ panic 会被兜住：客户端拿到标准 `500` 信封（**不会**看到 panic
 
 | 领域 | 类型 |
 |---|---|
-| **路由** | `Context::get/post/put/delete/patch/any`、`Routes`、`RouteHandle`、Gin 风格的 `:id` 与 `*path`、context path、`static_files`、404/405 信封 |
+| **路由** | `Context::get/post/put/delete/patch/any`、`Routes`、`RouteHandle`、`:id` 与 `*path` 路径模板（`{id}` 也行）、`require_meta` 守卫、context path、`static_files`、404/405 信封 |
 | **请求** | `Request` —— 路径参数、query、form、JSON 绑定、multipart 文件上传、分页、头、Cookie、客户端 IP、扩展属性、`has_meta` |
 | **响应** | `Response`、`Message`（`{code, data, msg, type}`）、`FileResponse`、重定向、原始 body，以及为 handler 常用返回类型实现的 `IntoResponse` |
 | **错误** | `Error` 同时承载 HTTP 码与业务码；从 `io::Error`、`sea_orm::DbErr`、`serde_json::Error`、`String`、`&str` 的 `?` 友好转换 |
@@ -501,36 +521,6 @@ cargo test --features mysql     # 换一个数据库驱动编译
 就住在这些路径上，而一问一答式的测试够不着它们。
 
 feature 开关：`sqlite`（默认）、`mysql`、`postgres`。
-
----
-
-## 与 Go 原版的不同
-
-设计一致；语言带来几处诚实的差异。
-
-| go-web-frame | rust-web-frame | 原因 |
-|---|---|---|
-| `return "hello", nil` | 声明返回类型后 `Ok("hello")` | Rust 没有 `any`；`IntoResponse` 覆盖同样的场景而不丢类型。 |
-| `errors.New("boom")` | `Err("boom".into())` | 统一一个错误类型 `Error`，为常见来源实现 `From`。 |
-| `c.Query("page")` | `req.query("page") -> Option<&str>` | "不存在"体现在类型里；`query_or`、`query_i64` 覆盖顺手的情况。 |
-| `Query.One()` 返回零值 + nil error | `query().one() -> Result<Option<T>>` | "有没有查到"由类型回答；`get_by_pk` 则直接返回 404。 |
-| `Model.Save(&user)`（upsert） | `insert(am)`、`update_by_pk(am)` | 两个操作两个方法，不在"主键是否设置"上藏分支。 |
-| 在 GORM **外面**包一层 `Model[T]` / `EntryModel[T, PK]` | `Model<E>` **绑到** sea-orm 上 | Go 那层是为了给 GORM 补泛型和主键 API；sea-orm 两者都有，再包一层只会把它藏起来。 |
-| `Query.Where("age > ?", 18)` | `filter(Column::Age.eq(18))` | 类型化的列在调用处就被检查；字符串条件只能到运行时才报错。 |
-| 内嵌 `*model.EntryModel[T, PK]` | `define_model!` → `Deref<Target = Model<E>>` | 用宏写出 Rust 写不出的"内嵌"。 |
-| `Viper.UnmarshalKey` | `config.section::<T>("web.server")` | "反序列化一个配置段"不叫 unmarshal key。 |
-| `db: {type, host, port, user, password, database, charset}` | `db: {url: "mysql://user:secret@host:3306/db"}` + sea-orm 的 `ConnectOptions` 设置项 | 连接串**就是** sea-orm 的接口，scheme 已经指明了驱动。用一堆字段拼出连接串等于给"库在哪"留两个真相来源，还会出现 `type` 与字段互相矛盾的情况。 |
-| `Message{code, data, msg, type}` | `Message{code, data, message, kind}`（serde rename 保持线上格式） | `type` 是关键字，`msg` 是缩写。 |
-| `PageAble.List` | `Paged.items`（序列化为 `list`） | —— |
-| `gin.HandlerFunc` | `web::Handler` | 按"它是什么"命名，而不是按引入它的那个包。 |
-| 按结构体名反射 | 以 `TypeId` 为键的注册表，`ctx.service::<T>()` | Rust 没有运行时反射。 |
-| `ctx.Get(...).WithMeta(...)` 返回 `*Route` | `ctx.get(...)` 返回 `RouteHandle`，`with_meta` 消费它 | 惯用的 Rust builder，链式调用不变。 |
-| `c.MultipartForm()`（解析进内存，超过 32 MiB 落盘） | `req.multipart().await?`（流式，超过 1 MiB 落盘） | 流式处理让大文件根本不进堆，而不只是"控制在一个阈值以内"。 |
-| `autocert` 对接 Let's Encrypt | 同样，但修正了 resolver 的顺序 | Go 的通配符匹配函数结尾是 `generateSelfSigned`，永不返回 nil，所以它下面那行 `autocert` 调用是死代码——**订单从未发起过**，每个未知域名拿到的都是自签证书。这里的顺序是：精确匹配 → 通配符 → **ACME** → 第一张证书 → 自签。 |
-| ACME 走另一个端口的 HTTP-01 | ACME 走同一个端口的 TLS-ALPN-01 | 不需要第二个监听器，也不用争 80 端口归谁。 |
-
-这一版没有实现：验证码、二维码、邮件、反向代理，以及 `component/` 下的那些组件
-（`cache`、`ratelimit` 等）。它们的扩展点——`Filter`、`Service`、`Converter`——都已就位。
 
 ---
 

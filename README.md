@@ -2,9 +2,11 @@
 
 **Declare policy on the route, not in the handler. Tag a route with `.with_meta(...)` — auth, permissions, rate limits — and one filter enforces it for every route that opted in.**
 
-A Rust port of [go-web-frame](https://github.com/chuccp/go-web-frame)'s design, built on
-[axum](https://docs.rs/axum) + [sea-orm](https://docs.rs/sea-orm) the way the original is
-built on Gin + GORM.
+Built on [axum](https://docs.rs/axum) + [sea-orm](https://docs.rs/sea-orm), with a
+hand-written config layer and [`tracing`](https://docs.rs/tracing) for logs. What the
+framework adds on top is the wiring: one `Builder` for services, controllers, filters and
+background runners, and a container keyed by type, so a handler asks for what it needs
+rather than reaching for a global.
 
 **🌐 Language** · English • [中文](README_ZH.md)
 
@@ -63,6 +65,21 @@ impl Filter for AuthFilter {
 
 Protecting a new endpoint is one `.with_meta(...)` at its route, and a handler can never
 forget the check. See [`examples/withmeta.rs`](examples/withmeta.rs) for the whole thing.
+
+A *route*, though, can forget it — metadata is opt-in, so a route that carries none asks
+for nothing and would serve unprotected. A guard states the rule once and makes that a
+startup error:
+
+```rust
+// Everything under `/admin` must carry `require_auth()`.
+ctx.require_meta("/admin", require_auth());
+```
+
+A route under the prefix without it never reaches the socket:
+
+```
+`/admin/settings` is under `/admin` and does not carry `require_auth` = true
+```
 
 | Call | Where | Meaning |
 |---|---|---|
@@ -221,7 +238,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Configuration
 
-Config files are searched in the same places the Go original looks, later ones winning:
+Config files are searched in four places, later ones winning:
 
 1. `/etc/<app>/config.{json,yaml,yml,toml}`
 2. `~/.<app>/config.{json,yaml,yml,toml}`
@@ -324,7 +341,9 @@ async fn upload(req: Request) -> Result<Message> {
 | `file.copy_to_dir(dir).await?` | writes it under the *sanitised* name, returns the path |
 | `file.temp_path()` | the spill file, when there is one |
 
-`Request::save_uploaded_file(file, destination)` is the Go original's `SaveUploadedFile`.
+`Request::save_uploaded_file(file, destination)` writes one out and returns the byte count,
+creating parent directories on the way — for the case where the destination is the
+application's to choose.
 
 ### Limits
 
@@ -396,6 +415,10 @@ The certificate is chosen per handshake, in this order:
 4. the first local certificate, so a single-certificate deployment answers for any name,
 5. a self-signed certificate, generated on first use and kept.
 
+The order is the point of the list: a step that always answers makes every step below it
+unreachable, so the self-signed fallback is last — nothing that could still be obtained is
+behind it.
+
 Local certificates are re-read when their file's mtime changes, checked once every five
 minutes — so a renewal written by `certbot` takes effect without a restart, at the cost of
 one `stat` per file, never a file read on the handshake path.
@@ -447,7 +470,7 @@ since the body holds files rather than JSON.
 
 | Area | Types |
 |---|---|
-| **Routing** | `Context::get/post/put/delete/patch/any`, `Routes`, `RouteHandle`, Gin-style `:id` and `*path` templates, context paths, `static_files`, 404/405 envelopes |
+| **Routing** | `Context::get/post/put/delete/patch/any`, `Routes`, `RouteHandle`, `:id` and `*path` path templates (`{id}` works too), `require_meta` guards, context paths, `static_files`, 404/405 envelopes |
 | **Requests** | `Request` — params, query, form, JSON binding, multipart uploads, pagination, headers, cookies, client IP, attributes, `has_meta` |
 | **Responses** | `Response`, `Message` (`{code, data, msg, type}`), `FileResponse`, redirects, raw bodies, `IntoResponse` for the types handlers actually return |
 | **Errors** | `Error` with HTTP *and* business codes, `?`-friendly conversions from `io::Error`, `sea_orm::DbErr`, `serde_json::Error`, `String`, `&str` |
@@ -528,43 +551,6 @@ asked to stop. Those are the paths where a web framework's bugs live, and the on
 request/response test cannot reach.
 
 Feature flags: `sqlite` (default), `mysql`, `postgres`.
-
----
-
-## Differences from the Go original
-
-The design is the same; the language forces a few honest changes.
-
-| go-web-frame | rust-web-frame | Why |
-|---|---|---|
-| `return "hello", nil` | `Ok("hello")` with a declared return type | Rust has no `any`; `IntoResponse` covers the same ground without losing the type. |
-| `errors.New("boom")` | `Err("boom".into())` | One error type, `Error`, with `From` impls for the usual sources. |
-| `c.Query("page")` | `req.query("page") -> Option<&str>` | Absence is in the type; `query_or`, `query_i64` cover the ergonomic cases. |
-| `Query.One()` returns a zero value + nil error | `query().one() -> Result<Option<T>>` | The type answers "did I find anything?". `get_by_pk` returns `404` instead. |
-| `Model.Save(&user)` (upsert) | `insert(am)`, `update_by_pk(am)` | Two operations, two methods; no hidden branch on whether the key is set. |
-| A `Model[T]` / `EntryModel[T, PK]` wrapper *around* GORM | `Model<E>` bound *to* sea-orm | The Go layer exists to give GORM generics and a PK-aware API. sea-orm already has both, so wrapping it again would only hide it. |
-| `Query.Where("age > ?", 18)` | `filter(Column::Age.eq(18))` | Typed columns are checked at the call site; a string condition can only fail at runtime. |
-| Embedding `*model.EntryModel[T, PK]` | `define_model!` → `Deref<Target = Model<E>>` | The macro writes the embedding Rust cannot. |
-| `Viper.UnmarshalKey` | `config.section::<T>("web.server")` | Deserialising a config section is not "unmarshalling a key". |
-| `db: {type, host, port, user, password, database, charset}` | `db: {url: "mysql://user:secret@host:3306/db"}` plus sea-orm's `ConnectOptions` settings | The connection string *is* sea-orm's interface, and its scheme names the driver. Assembling one from parts adds a second source of truth for where the database is, and a `type` that can disagree with the fields. |
-| `Message{code, data, msg, type}` | `Message{code, data, message, kind}` (serde renames keep the wire format) | `type` is a keyword, and `msg` is an abbreviation. |
-| `PageAble.List` | `Paged.items` (serialised as `list`) | — |
-| `gin.HandlerFunc` | `web::Handler` | Named after what it is, not after the package that introduced it. |
-| Reflection by struct name | `TypeId`-keyed registry, `ctx.service::<T>()` | No runtime reflection. |
-| `ctx.Get(...).WithMeta(...)` returns `*Route` | `ctx.get(...)` returns `RouteHandle`, `with_meta` consumes it | Idiomatic Rust builder, same chaining. |
-| `c.MultipartForm()` (parses into memory, spills past 32 MiB) | `req.multipart().await?` (streamed, spills past 1 MiB) | Streaming keeps a large upload off the heap entirely, not just under a threshold. |
-| `autocert` for Let's Encrypt | the same, but the resolver order is fixed | The Go wildcard matcher ended in `generateSelfSigned`, so it never returned nil and the `autocert` call below it was unreachable — no certificate was ever ordered, and every unknown name got a self-signed one. The order here is exact match → wildcard → **ACME** → first certificate → self-signed. |
-| ACME over HTTP-01 on a second port | ACME over TLS-ALPN-01 on the one port | No second listener, and no argument over who owns port 80. |
-
-Everything in the Go original's `component/` has a counterpart under `src/component/`:
-`cache`, `ratelimit`, `validator`, `mail`, `auth`, `localcache`, `qrcode`, `captcha`,
-`schedule` and `proxy`. Each is an ordinary `Filter` or `Service` on the same three
-extension points — `Filter`, `Service`, `Converter` — which is the only thing that makes
-them work; nothing in the component model is privileged.
-
-Two things are deliberately not ported: the `util` package's image helpers, and `cors` as a
-component. CORS here is a property of the listener (`web.server.cors`), applied outside the
-router so it also covers the fallback, rather than of a route.
 
 ---
 
