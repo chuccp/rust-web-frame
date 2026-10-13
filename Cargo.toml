@@ -64,6 +64,9 @@ rustls-pemfile = "2.2.0"
 rcgen = "0.14.10"
 rustls-acme = { version = "0.15.4", default-features = false, features = ["ring", "tokio", "webpki-roots"] }
 x509-parser = "0.18.1"
+moka = { version = "0.12.16", features = ["future"] }
+base64 = "0.23.1"
+redis = { version = "1.7.1", default-features = false, features = ["tokio-comp", "connection-manager"] }
 
 [features]
 default = ["sqlite"]
