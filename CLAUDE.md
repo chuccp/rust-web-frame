@@ -167,6 +167,33 @@ Everything else follows axum's own shape: a task per connection,
 inserts `ConnectInfo` — axum's `into_make_service_with_connect_info` resolves through the
 `Connected` trait, which is ambiguous for a bare `SocketAddr`.
 
+### TLS (`web/tls.rs`)
+
+`CertStore` answers one question — which certificate for this SNI name — in a fixed order:
+exact local match, wildcard, **ACME**, first local certificate, self-signed. The order is
+the point. The Go original had the wildcard matcher end in `generateSelfSigned`, so it never
+returned nil and the `autocert.GetCertificate` call below it was unreachable: no
+certificate was ever ordered, and every unknown name got a self-signed one that was then
+written into the exact-match map and stuck. Do not "simplify" the order back.
+
+Two constraints worth knowing before touching this file:
+
+* `ResolvesServerCert::resolve` runs on the handshake path and is **synchronous**. It must
+  not read files. Local certificates are therefore loaded at startup and re-read by
+  `watch_files`, a background task that checks mtimes every `RELOAD_INTERVAL`; the resolver
+  only ever touches memory.
+* `rustls::server::ClientHello` has private fields and no constructor, so the ACME resolver
+  has to be handed the *real* hello — which is why the ordering lives inside `resolve`
+  rather than in a `lookup(name)` helper.
+
+ACME uses TLS-ALPN-01 (`UseChallenge::TlsAlpn01`), so the challenge certificate is served
+by the same resolver and no port 80 listener is needed. `server_config` puts `acme-tls/1`
+first in the ALPN list for the same reason.
+
+The crypto provider is pinned to `ring` in Cargo.toml (`rustls`, `tokio-rustls` and
+`rustls-acme` all use it). Installing two providers would make
+`CryptoProvider::install_default` ambiguous at runtime.
+
 ### Request bodies (`web/request.rs`, `web/multipart.rs`)
 
 `Request::body` is an enum, not a `Bytes`:
@@ -260,12 +287,9 @@ are in place and exercised.
 
 ## Known gaps
 
-* **TLS is not implemented.** `ServerConfig::ssl` deserialises and `ssl_enabled()` reports
-  it, but `SslConfig` has no `hosts` field — so the Go original's Let's Encrypt auto-cert
-  is not merely unwired, it is not expressible. `Server::serve` now *refuses to start* when
-  `ssl.enabled` is set, rather than quietly serving plain HTTP on a port the config says is
-  HTTPS. Implementing it means an ACME client (`rustls-acme` / `instant-acme`) plus a cert
-  store.
+* The ACME path is exercised up to the point of a real authority: everything except
+  talking to Let's Encrypt is tested (resolver ordering, challenge handling, cache
+  directory), but no test can complete an issuance without a domain and an account.
 * SSE streams use fixed headers — `SseStream` cannot add response headers, because the
   response is built before the handler runs.
 * There is no chunked-upload helper for a client that streams *in* without a multipart

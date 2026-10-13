@@ -9,6 +9,7 @@
 
 use std::net::SocketAddr;
 use std::pin::pin;
+use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll};
 use std::time::Duration;
 
@@ -16,13 +17,14 @@ use axum::Router;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto::Builder as ConnectionBuilder;
 use hyper_util::service::TowerToHyperService;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tower::{Service, ServiceExt as _};
 
 use super::config::ServerConfig;
 use super::error::{Error, Result};
+use super::tls::CertStore;
 
 /// How long a listener keeps draining in-flight requests after shutdown is requested.
 ///
@@ -38,22 +40,40 @@ pub(crate) async fn serve(
     router: Router,
     config: &ServerConfig,
     cancel: CancellationToken,
+    tls: Option<Arc<CertStore>>,
 ) -> Result<()> {
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     let listener = TcpListener::bind(addr).await.map_err(|err| {
         Error::with_source(500, err).detail(format!("cannot bind port {}", config.port))
     })?;
 
+    // h2 is offered only over TLS; over plaintext it would need prior knowledge.
+    let acceptor = match &tls {
+        Some(store) => Some(tokio_rustls::TlsAcceptor::from(super::tls::server_config(
+            Arc::clone(store),
+            vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+        )?)),
+        None => None,
+    };
+
     let header_timeout = config.effective_read_header_timeout();
     let max_header_bytes = config.effective_max_header_bytes();
     let mut connections: JoinSet<()> = JoinSet::new();
 
-    tracing::info!(
-        port = config.port,
-        headerTimeout = ?header_timeout,
-        maxHeaderBytes = max_header_bytes,
-        "server listening"
-    );
+    match &tls {
+        Some(store) => tracing::info!(
+            port = config.port,
+            domains = ?store.domains(),
+            autoHosts = ?store.auto_hosts(),
+            "https server listening"
+        ),
+        None => tracing::info!(
+            port = config.port,
+            headerTimeout = ?header_timeout,
+            maxHeaderBytes = max_header_bytes,
+            "server listening"
+        ),
+    }
 
     loop {
         tokio::select! {
@@ -77,9 +97,23 @@ pub(crate) async fn serve(
                 });
 
                 let stopping = cancel.clone();
+                let acceptor = acceptor.clone();
                 connections.spawn(async move {
-                    serve_connection(stream, service, stopping, header_timeout, max_header_bytes)
-                        .await;
+                    match acceptor {
+                        Some(acceptor) => match acceptor.accept(stream).await {
+                            Ok(stream) => {
+                                serve_connection(stream, service, stopping, header_timeout, max_header_bytes)
+                                    .await;
+                            }
+                            // A failed handshake is the client's problem: a port scanner, a
+                            // browser that refused the certificate, or a protocol mismatch.
+                            Err(err) => tracing::debug!(error = %err, "tls handshake failed"),
+                        },
+                        None => {
+                            serve_connection(stream, service, stopping, header_timeout, max_header_bytes)
+                                .await;
+                        }
+                    }
                 });
             }
         }
@@ -134,8 +168,8 @@ where
 
 /// Serves one connection until it closes, or until shutdown is requested — in which case
 /// the request in flight is allowed to finish first.
-async fn serve_connection<S>(
-    stream: TcpStream,
+async fn serve_connection<S, I>(
+    stream: I,
     service: S,
     stopping: CancellationToken,
     header_timeout: Duration,
@@ -147,6 +181,7 @@ async fn serve_connection<S>(
         + 'static,
     S::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     S::Future: Send,
+    I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let mut builder = ConnectionBuilder::new(TokioExecutor::new());
     builder

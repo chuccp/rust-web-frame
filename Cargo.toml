@@ -58,6 +58,12 @@ multer = "3.1.0"
 tempfile = "3"
 hyper = { version = "1.12.0", features = ["http1", "http2", "server"] }
 hyper-util = { version = "0.1.21", features = ["tokio", "server-auto", "server", "service"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
+rustls-pemfile = "2.2.0"
+rcgen = "0.14.10"
+rustls-acme = { version = "0.15.4", default-features = false, features = ["ring", "tokio", "webpki-roots"] }
+x509-parser = "0.18.1"
 
 [features]
 default = ["sqlite"]

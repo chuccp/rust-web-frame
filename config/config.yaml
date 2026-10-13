@@ -35,6 +35,23 @@ web:
     # raised to it: that is the smallest read buffer an HTTP/1 connection can use.
     maxHeaderBytes: 0
 
+    # HTTPS. Two ways to get a certificate, and the first one configured wins.
+    # ssl:
+    #   enabled: true
+    #   # Names to obtain and renew automatically over ACME (Let's Encrypt). The challenge
+    #   # is answered on TLS-ALPN-01, so no separate port 80 server is needed.
+    #   hosts: ["example.com", "www.example.com"]
+    #   # Some authorities require a contact address.
+    #   # email: ops@example.com
+    #   # Where obtained certificates are cached. Defaults to ./auto_cert.
+    #   # cacheDir: ./auto_cert
+    #
+    #   # Or bring your own. These are re-read when the files change, so a renewal written
+    #   # by certbot takes effect without a restart. Takes precedence over `hosts`.
+    #   certs:
+    #     - certFile: /etc/ssl/example.com.crt
+    #       keyFile: /etc/ssl/example.com.key
+
     # Cross-origin policy. Omit the section and no CORS headers are sent at all, which is
     # the safe default. Configured, it is applied outside the router, so a preflight
     # OPTIONS is answered even though it matches no route.

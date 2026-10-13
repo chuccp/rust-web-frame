@@ -47,9 +47,12 @@ pub mod route;
 pub mod routes;
 pub mod server;
 pub mod sse;
+pub mod tls;
 pub mod ws;
 
-pub use config::{DEFAULT_MAX_BODY_SIZE, DEFAULT_PORT, SERVER_CONFIG_KEY, ServerConfig, SslConfig};
+pub use config::{
+    DEFAULT_MAX_BODY_SIZE, DEFAULT_PORT, SERVER_CONFIG_KEY, ServerConfig, SslCertificate, SslConfig,
+};
 pub use converter::{Converter, DefaultConverter, error_envelope};
 pub use error::{Error, Result, code};
 pub use file::FileResponse;
@@ -63,6 +66,7 @@ pub use request::{Request, SetCookie};
 pub use response::{IntoResponse, Response, ResponseBody};
 pub use route::{HandlerMeta, MetaOption, Route, RouteHandle, RouteKind};
 pub use routes::Routes;
+pub use tls::CertStore;
 
 /// Pagination types live with the model layer but are re-exported here, because a
 /// handler reaches for them far more often than a model does.

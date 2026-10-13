@@ -346,6 +346,41 @@ web:
 
 非法 origin 或 method 是**启动错误**，而不是某个请求悄悄少一个头。
 
+### HTTPS
+
+两种拿证书的方式，配置了哪个用哪个：
+
+```yaml
+web:
+  server:
+    ssl:
+      enabled: true
+      # 走 ACME（Let's Encrypt）自动申请和续期
+      hosts: ["example.com", "www.example.com"]
+      email: ops@example.com           # 有些 CA 要求留联系方式
+      cacheDir: ./auto_cert            # 申请的证书缓存位置
+
+      # 或者用自己的证书：
+      certs:
+        - certFile: /etc/ssl/example.com.crt
+          keyFile: /etc/ssl/example.com.key
+```
+
+两个都不配就发**自签证书**——开发机想要的正是这个，浏览器会警告。
+
+证书按握手逐个选，顺序是：
+
+1. 本地证书精确匹配
+2. 通配符匹配——`*.example.com` 覆盖 `a.example.com`，**不覆盖** `a.b.example.com`
+3. ACME
+4. 本地第一张证书（单证书部署对任意域名都能应答）
+5. 自签证书，首次使用生成并保留
+
+本地证书在文件 mtime 变化时重新读取，每五分钟检查一次——所以 certbot 续期后**不用重启**就生效，
+代价是每个文件一次 `stat`，握手路径上永远不读文件。
+
+ACME 挑战走 **TLS-ALPN-01**，所以不需要另起 80 端口；挑战证书由同一个 resolver 提供。
+
 ### `contextPath` 与静态文件的位置
 
 `contextPath` 给所有路由加前缀。写成 `api`、`/api/` 还是 `/api` 是同一件事——会归一化成 `/api`；
@@ -389,7 +424,7 @@ panic 会被兜住：客户端拿到标准 `500` 信封（**不会**看到 panic
 | **响应** | `Response`、`Message`（`{code, data, msg, type}`）、`FileResponse`、重定向、原始 body，以及为 handler 常用返回类型实现的 `IntoResponse` |
 | **错误** | `Error` 同时承载 HTTP 码与业务码；从 `io::Error`、`sea_orm::DbErr`、`serde_json::Error`、`String`、`&str` 的 `?` 友好转换 |
 | **流式** | `SseStream`、`WebSocketStream` |
-| **运维** | 访问日志（每请求一行，`debug` 级）、panic 隔离并返回标准 500 信封、请求超时、CORS、带 runner 与连接宽限期的优雅关停 |
+| **运维** | 访问日志（每请求一行，`debug` 级）、panic 隔离并返回标准 500 信封、请求超时、CORS、HTTPS（ACME 或本地证书）、带 runner 与连接宽限期的优雅关停 |
 | **上传** | `MultipartForm`、`UploadedFile`、`sanitise_file_name`，流式解析并落临时文件 |
 | **扩展点** | `Filter`、`Converter`、`Runner`、`Rest`、`Service` |
 | **数据** | `db::Database`（连接池**或**事务）、`db::transaction`、`Model<E>`、`define_model!`、`ModelGroup` —— 查询本身交给 [sea-orm](https://docs.rs/sea-orm) |

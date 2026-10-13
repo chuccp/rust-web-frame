@@ -228,15 +228,51 @@ impl ServerConfig {
 }
 
 /// TLS / HTTPS settings.
+///
+/// Two ways to get a certificate, and the first one configured wins:
+///
+/// * `certs` — PEM files on disk. They are re-read when they change, so a renewal written
+///   by `certbot` takes effect without a restart.
+/// * `hosts` — names to obtain and renew automatically over ACME (Let's Encrypt),
+///   answering the challenge on TLS-ALPN-01 and caching the result in `cacheDir`.
+///
+/// With neither, the server serves a self-signed certificate, which is what a development
+/// machine wants and what a browser will warn about.
+///
+/// ```yaml
+/// web:
+///   server:
+///     ssl:
+///       enabled: true
+///       hosts: ["example.com", "www.example.com"]
+///       # or, for certificates the operator already has:
+///       certs:
+///         - certFile: /etc/ssl/example.com.crt
+///           keyFile: /etc/ssl/example.com.key
+/// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct SslConfig {
     /// Whether HTTPS is enabled.
     pub enabled: bool,
-    /// Path to a PEM certificate chain.
-    pub cert_file: Option<PathBuf>,
-    /// Path to the matching PEM private key.
-    pub key_file: Option<PathBuf>,
+    /// Domain names to obtain and renew automatically over ACME.
+    pub hosts: Vec<String>,
+    /// Local PEM certificate pairs. Takes precedence over `hosts`.
+    pub certs: Vec<SslCertificate>,
+    /// Where automatically obtained certificates are cached. Defaults to `./auto_cert`.
+    pub cache_dir: Option<PathBuf>,
+    /// Contact address sent to the ACME account. Some authorities require one.
+    pub email: Option<String>,
+}
+
+/// One PEM certificate and its key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SslCertificate {
+    /// PEM certificate chain.
+    pub cert_file: PathBuf,
+    /// PEM private key.
+    pub key_file: PathBuf,
 }
 
 #[cfg(test)]
@@ -308,6 +344,30 @@ mod tests {
             config.normalise();
             assert_eq!(config.context_path, expected, "from {written:?}");
         }
+    }
+
+    #[test]
+    fn tls_takes_either_local_certificates_or_hosts() {
+        let config: SslConfig = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "hosts": ["example.com"],
+            "certs": [{"certFile": "/a.crt", "keyFile": "/a.key"}],
+            "cacheDir": "/tmp/certs",
+            "email": "ops@example.com"
+        }))
+        .unwrap();
+
+        assert!(config.enabled);
+        assert_eq!(config.hosts, ["example.com"]);
+        assert_eq!(
+            config.certs[0].cert_file,
+            std::path::PathBuf::from("/a.crt")
+        );
+        assert_eq!(
+            config.cache_dir,
+            Some(std::path::PathBuf::from("/tmp/certs"))
+        );
+        assert_eq!(config.email.as_deref(), Some("ops@example.com"));
     }
 
     #[test]

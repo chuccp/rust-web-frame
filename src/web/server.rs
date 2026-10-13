@@ -255,16 +255,24 @@ impl Server {
     ///
     /// Fails when the port cannot be bound.
     pub async fn serve(self: &Arc<Self>, context: Context) -> Result<()> {
-        if self.config.ssl_enabled() {
-            // Silently serving plain HTTP on a port the config says is HTTPS would be
-            // worse than refusing to start.
-            return Err(Error::new(500, "TLS is configured but not implemented").detail(
-                "`web.server.ssl` is not wired to a listener yet — remove the section to serve plain HTTP",
-            ));
-        }
+        let tls = match self.config.ssl.as_ref().filter(|ssl| ssl.enabled) {
+            Some(ssl) => Some(super::tls::CertStore::load(ssl)?),
+            None => None,
+        };
+
+        // A certificate that changes on disk takes effect without a restart.
+        let watcher = tls
+            .as_ref()
+            .and_then(|store| store.watch_files(context.cancellation_token()));
 
         let router = self.router(context.clone());
-        super::listener::serve(router, &self.config, context.cancellation_token()).await
+        let outcome =
+            super::listener::serve(router, &self.config, context.cancellation_token(), tls).await;
+
+        if let Some(watcher) = watcher {
+            watcher.abort();
+        }
+        outcome
     }
 }
 

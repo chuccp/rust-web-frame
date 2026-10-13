@@ -360,6 +360,45 @@ web:
 An origin or method that is not a valid header is a startup error, not a request that
 quietly loses a header.
 
+### HTTPS
+
+Two ways to get a certificate, and the first one configured wins:
+
+```yaml
+web:
+  server:
+    ssl:
+      enabled: true
+      # Obtain and renew automatically over ACME (Let's Encrypt).
+      hosts: ["example.com", "www.example.com"]
+      email: ops@example.com           # some authorities require one
+      cacheDir: ./auto_cert            # where obtained certificates are kept
+
+      # Or bring your own:
+      certs:
+        - certFile: /etc/ssl/example.com.crt
+          keyFile: /etc/ssl/example.com.key
+```
+
+With neither, the server serves a self-signed certificate — what a development machine
+wants, and what a browser will warn about.
+
+The certificate is chosen per handshake, in this order:
+
+1. an exact match among the local certificates,
+2. a wildcard match — `*.example.com` covers `a.example.com`, **not** `a.b.example.com`,
+3. ACME,
+4. the first local certificate, so a single-certificate deployment answers for any name,
+5. a self-signed certificate, generated on first use and kept.
+
+Local certificates are re-read when their file's mtime changes, checked once every five
+minutes — so a renewal written by `certbot` takes effect without a restart, at the cost of
+one `stat` per file, never a file read on the handshake path.
+
+The ACME challenge is answered over **TLS-ALPN-01**, so no separate port 80 server is
+needed; the challenge certificate is served by the same resolver that serves everything
+else.
+
 ### `contextPath`, and where static files live
 
 `contextPath` prefixes every route. Written as `api`, `/api/` or `/api` it means the same
@@ -408,7 +447,7 @@ since the body holds files rather than JSON.
 | **Responses** | `Response`, `Message` (`{code, data, msg, type}`), `FileResponse`, redirects, raw bodies, `IntoResponse` for the types handlers actually return |
 | **Errors** | `Error` with HTTP *and* business codes, `?`-friendly conversions from `io::Error`, `sea_orm::DbErr`, `serde_json::Error`, `String`, `&str` |
 | **Streaming** | `SseStream`, `WebSocketStream` |
-| **Ops** | access log (one line per request, at `debug`), panic isolation with the standard 500 envelope, request timeouts, CORS, graceful shutdown with bounded runner and connection graces |
+| **Ops** | access log (one line per request, at `debug`), panic isolation with the standard 500 envelope, request timeouts, CORS, HTTPS with ACME or local certificates, graceful shutdown with bounded runner and connection graces |
 | **Uploads** | `MultipartForm`, `UploadedFile`, `sanitise_file_name`, streamed and spilling to temp files |
 | **Extensibility** | `Filter`, `Converter`, `Runner`, `Rest`, `Service` |
 | **Data** | `db::Database` (pool *or* transaction), `db::transaction`, `Model<E>`, `define_model!`, `ModelGroup` — queries themselves are [sea-orm](https://docs.rs/sea-orm)'s |
