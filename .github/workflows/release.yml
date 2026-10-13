@@ -2,6 +2,16 @@ name: Release
 
 # Same shape as go-web-frame's release workflow: a version tag runs the checks, publishes
 # the release, and then makes the library available to the people who consume it.
+#
+# One part works differently, because in Go the tag *is* the version and nothing else holds
+# it: a crate's version lives in `Cargo.toml`, and `cargo publish` reads it from there —
+# there is no flag that overrides it. So the tag is the one place a version is written by
+# hand, and this workflow writes it into the manifest and commits that, which is what keeps
+# the two from drifting apart over a series of releases.
+#
+# The tag therefore points at the commit *before* the bump: what it names is the release on
+# crates.io, which is where consumers get it. The bump commit lands on `main` as
+# `chore(release): vX.Y.Z` — so `main` must allow the workflow to push to it.
 on:
   push:
     tags:
@@ -32,17 +42,7 @@ jobs:
       - name: Cache the build
         uses: Swatinem/rust-cache@v2
 
-      # A Go tag *is* the version, so the Go workflow has nothing to compare it against.
-      # A crate carries its own, and a tag that disagrees publishes something nobody can
-      # find under the version they asked for.
-      - name: Check the tag names the version in Cargo.toml
-        run: |
-          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::the tag $GITHUB_REF_NAME does not match Cargo.toml's $version"
-            exit 1
-          fi
-
+      # Everything below publishes or commits, so what was tagged is checked first.
       - name: Run tests
         run: cargo test --locked --all-targets
 
@@ -51,6 +51,93 @@ jobs:
 
       - name: Check the formatting
         run: cargo fmt --check
+
+      # The tag names the release, so it may not name one that is already behind us, and it
+      # may not go backwards. A re-run of a release whose bump has already landed finds the
+      # two equal, and carries on to the publish rather than failing.
+      #
+      # The comparison is semver's, not `sort -V`'s: version sort puts `0.2.0-beta` above
+      # `0.2.0`, which is the wrong way round, and would let a tag walk the manifest
+      # backwards.
+      - name: Take the version from the tag
+        id: version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          if ! printf '%s' "$tag" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; then
+            echo "::error::$GITHUB_REF_NAME is not v<major>.<minor>.<patch>"
+            exit 1
+          fi
+
+          current="$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+
+          # `python3 -c` with the code on its own lines: the shell keeps the quoting, and
+          # the block scalar above has already taken the indentation off.
+          verdict="$(python3 -c "
+          import sys
+
+          # Semver precedence: a release sorts above any of its own pre-releases.
+          def order(text):
+              core, _, pre = text.split('+')[0].partition('-')
+              numbers = tuple(int(part) for part in core.split('.'))
+              if not pre:
+                  return (numbers, 1, ())
+              identifiers = tuple(
+                  (0, int(token), '') if token.isdigit() else (1, 0, token)
+                  for token in pre.split('.')
+              )
+              return (numbers, 0, identifiers)
+
+          print('bump' if order(sys.argv[2]) > order(sys.argv[1])
+                else 'equal' if order(sys.argv[2]) == order(sys.argv[1])
+                else 'refused')
+          " "$current" "$tag")"
+
+          echo "Cargo.toml says $current, the tag says $tag: $verdict"
+          if [ "$verdict" = "refused" ]; then
+            echo "::error::$GITHUB_REF_NAME is older than the $current in Cargo.toml"
+            exit 1
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "bump=$([ "$verdict" = "bump" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Write the version into Cargo.toml
+        if: steps.version.outputs.bump == 'true'
+        run: |
+          tag="${{ steps.version.outputs.tag }}"
+          # The address takes the rewrite to the *first* `version = "..."` in the file, so a
+          # `[dependencies.x]` table with a `version` of its own stays out of it.
+          sed -i -E "0,/^version = \"[^\"]*\"/s//version = \"$tag\"/" Cargo.toml
+
+          # One line, and only one: a manifest that lost a dependency's version to this
+          # rewrite is still valid TOML, and nothing later in the job would notice.
+          changed="$(git diff --numstat -- Cargo.toml | awk '{print $1" "$2}')"
+          if [ "$changed" != "1 1" ]; then
+            echo "::error::the rewrite touched $changed lines of Cargo.toml, expected 1 1"
+            git diff -- Cargo.toml
+            exit 1
+          fi
+
+          # Cargo.lock carries the package version as well, and resolving rewrites it.
+          cargo metadata --format-version 1 > /dev/null
+
+          after="$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+          if [ "$after" != "$tag" ]; then
+            echo "::error::Cargo.toml still says $after, not $tag"
+            exit 1
+          fi
+          git diff --stat
+
+      - name: Commit the version
+        if: steps.version.outputs.bump == 'true'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore(release): $GITHUB_REF_NAME"
+          git push origin HEAD:main
 
       # `--notes-from-tag` rather than the Go workflow's generated notes: the tags in this
       # repository carry their own release notes, which is what v0.1.0's release shows.
@@ -61,8 +148,8 @@ jobs:
 
       # The Rust counterpart of the Go workflow's module-proxy warm-up. A Go tag makes the
       # module fetchable on its own; a crate has to be uploaded, so this is the step that
-      # makes the release real for consumers — and the only one that cannot be undone
-      # (a published version can be yanked, never replaced). It is skipped until the secret
+      # makes the release real for consumers — and the only one that cannot be undone (a
+      # published version can be yanked, never replaced). It is skipped until the secret
       # exists, so the workflow is usable before the crate is on crates.io.
       - name: Check the crate packages
         run: cargo publish --locked --dry-run

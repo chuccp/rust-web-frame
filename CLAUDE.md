@@ -27,6 +27,16 @@ cargo test --features mysql       # build against another driver
 
 Feature flags: `sqlite` (default), `mysql`, `postgres`.
 
+## Releasing
+
+Push a `vX.Y.Z` tag, and `.github/workflows/release.yml` does the rest: tests, clippy and
+`cargo fmt --check` on what was tagged; the tag's version written into `Cargo.toml` and
+`Cargo.lock` and committed to `main` as `chore(release): vX.Y.Z`; the GitHub Release built
+from the tag's own message; `cargo publish --dry-run`; and `cargo publish` when
+`CARGO_REGISTRY_TOKEN` is set. The tag is therefore the one place a version is written by
+hand, and the commit it points at is the one *before* the bump — the version on crates.io is
+what the tag names.
+
 ## Architecture
 
 ```
