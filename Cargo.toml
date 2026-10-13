@@ -67,6 +67,10 @@ x509-parser = "0.18.1"
 moka = { version = "0.12.16", features = ["future"] }
 base64 = "0.23.1"
 redis = { version = "1.7.1", default-features = false, features = ["tokio-comp", "connection-manager"] }
+jsonwebtoken = { version = "11.1.0", default-features = false, features = ["rust_crypto"] }
+qrcode = { version = "0.14.1", default-features = false, features = ["image", "svg"] }
+cron = "0.17.0"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 [features]
 default = ["sqlite"]

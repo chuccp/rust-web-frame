@@ -2,7 +2,7 @@
 //!
 //! [`MemoryCache`] is a concurrent, capacity-bounded, TTL-aware map in this process;
 //! [`RedisCache`] is the same interface over a shared Redis. Both plug into the container,
-//! so a handler asks for [`Cache`](crate::component::Cache) and the deployment decides
+//! so a handler asks for [`Cache`] and the deployment decides
 //! which one it gets:
 //!
 //! ```yaml
