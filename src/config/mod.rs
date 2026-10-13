@@ -141,7 +141,7 @@ impl Config {
     }
 
     /// Reads a required scalar, failing when it is absent.
-    pub fn get_required<T: DeserializeOwned>(&self, key: &str) -> Result<T> {
+    pub fn require<T: DeserializeOwned>(&self, key: &str) -> Result<T> {
         let value = self.get(key).ok_or_else(|| {
             Error::new(code::INTERNAL_ERROR, format!("missing config key `{key}`"))
         })?;
@@ -158,7 +158,7 @@ impl Config {
     ///
     /// A missing key yields `T::default()` — the section simply was not configured — which
     /// is why every framework config struct carries `#[serde(default)]`.
-    pub fn unmarshal_key<T: DeserializeOwned + Default>(&self, key: &str) -> Result<T> {
+    pub fn section<T: DeserializeOwned + Default>(&self, key: &str) -> Result<T> {
         match self.get(key) {
             Some(value) => serde_json::from_value(value.clone()).map_err(|err| {
                 Error::new(
@@ -169,11 +169,6 @@ impl Config {
             }),
             None => Ok(T::default()),
         }
-    }
-
-    /// The subtree at `key` as an object.
-    pub fn section(&self, key: &str) -> Option<serde_json::Map<String, Value>> {
-        self.get(key).and_then(Value::as_object).cloned()
     }
 
     /// Replaces the tree while keeping the backing file, so [`write`](Self::write) still
@@ -318,11 +313,6 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<Config> {
     Config::load_file(path)
 }
 
-/// A config with no values — handy in tests.
-pub fn empty_config() -> Config {
-    Config::empty()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn unmarshal_key_returns_defaults_for_a_missing_section() {
+    fn section_returns_defaults_for_a_missing_section() {
         #[derive(serde::Deserialize, Default, PartialEq, Debug)]
         #[serde(default)]
         struct Section {
@@ -363,21 +353,21 @@ mod tests {
         }
 
         let config = Config::from_value(serde_json::json!({"other": {"name": "x"}}));
-        let section: Section = config.unmarshal_key("section").unwrap();
+        let section: Section = config.section("section").unwrap();
         assert_eq!(section, Section::default());
     }
 
     #[test]
-    fn unmarshal_key_reports_a_bad_section() {
+    fn section_reports_a_bad_section() {
         let config = Config::from_value(serde_json::json!({"section": {"retries": "many"}}));
-        let result: Result<HashMap<String, u32>> = config.unmarshal_key("section");
+        let result: Result<HashMap<String, u32>> = config.section("section");
         assert!(result.is_err());
     }
 
     #[test]
     fn required_keys_fail_loudly() {
         let config = Config::empty();
-        let result: Result<String> = config.get_required("db.url");
+        let result: Result<String> = config.require("db.url");
         assert!(result.is_err());
         assert!(result.unwrap_err().client_message().contains("db.url"));
     }

@@ -28,7 +28,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use sea_orm::{
     ConnectOptions, ConnectionTrait, DatabaseConnection, DbBackend, ExecResult, QueryResult,
-    Statement, TransactionError, TransactionTrait,
+    Statement, TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
 
@@ -69,7 +69,7 @@ impl Database {
 
     /// Wraps an open transaction.
     #[must_use]
-    pub fn transaction_handle(transaction: sea_orm::DatabaseTransaction) -> Self {
+    pub(crate) fn transaction_handle(transaction: sea_orm::DatabaseTransaction) -> Self {
         Self(Arc::new(Handle::Transaction(transaction)))
     }
 
@@ -394,7 +394,7 @@ pub async fn connect_from_config(config: &Config) -> Result<Option<Database>> {
     if !config.contains_key(DB_CONFIG_KEY) {
         return Ok(None);
     }
-    let db_config: DbConfig = config.unmarshal_key(DB_CONFIG_KEY)?;
+    let db_config: DbConfig = config.section(DB_CONFIG_KEY)?;
     Ok(Some(connect(&db_config).await?))
 }
 
@@ -462,11 +462,6 @@ where
     db.transaction(body).await
 }
 
-/// Converts a sea-orm transaction error into the framework's error type.
-pub fn transaction_error(error: TransactionError<Error>) -> Error {
-    Error::from(error)
-}
-
 /// Reports whether `table` exists.
 pub async fn has_table(db: &Database, table: &str) -> Result<bool> {
     use sea_orm::ConnectionTrait;
@@ -490,7 +485,7 @@ pub async fn has_table(db: &Database, table: &str) -> Result<bool> {
         ),
         // `DatabaseBackend` is `#[non_exhaustive]`; an unknown driver is treated as
         // "cannot tell", which makes `create_table` fall through to `CREATE TABLE IF NOT
-        // EXISTS` and `Model::is_exist` return `false`.
+        // EXISTS` and `Model::exists` return `false`.
         _ => return Ok(false),
     };
 

@@ -52,18 +52,15 @@ pub use config::{DEFAULT_MAX_BODY_SIZE, DEFAULT_PORT, SERVER_CONFIG_KEY, ServerC
 pub use converter::{Converter, DefaultConverter, error_envelope};
 pub use error::{Error, Result, code};
 pub use file::FileResponse;
-pub use filter::{
-    BoxFuture, Filter, FilterChain, FnFilter, HandlerFunc, all_methods, filter_fn, handler,
-    standard_methods,
-};
+pub use filter::{BoxFuture, Filter, FilterChain, FnFilter, Handler, filter_fn, handler};
 pub use message::Message;
 pub use multipart::{
     DEFAULT_MAX_UPLOAD_MEMORY, MultipartForm, MultipartLimits, UploadedFile,
     parse as parse_multipart, sanitise_file_name,
 };
 pub use request::{Request, SetCookie};
-pub use response::{IntoResponse, Response, ResponseBody, json_response};
-pub use route::{HandlerMeta, MetaOption, Route, RouteHandle, RouteKind, to_axum_path};
+pub use response::{IntoResponse, Response, ResponseBody};
+pub use route::{HandlerMeta, MetaOption, Route, RouteHandle, RouteKind};
 pub use routes::Routes;
 
 /// Pagination types live with the model layer but are re-exported here, because a

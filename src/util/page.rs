@@ -79,21 +79,22 @@ impl Page {
 pub struct Paged<T> {
     /// Total number of rows matching the query, ignoring pagination.
     pub total: i64,
-    /// The rows on this page.
-    pub list: Vec<T>,
+    /// The rows on this page. Serialised as `list`, matching the Go original's clients.
+    #[serde(rename = "list")]
+    pub items: Vec<T>,
 }
 
 impl<T> Paged<T> {
     /// Wraps a page of rows.
-    pub fn new(total: i64, list: Vec<T>) -> Self {
-        Self { total, list }
+    pub fn new(total: i64, items: Vec<T>) -> Self {
+        Self { total, items }
     }
 
     /// An empty page.
     pub fn empty() -> Self {
         Self {
             total: 0,
-            list: Vec::new(),
+            items: Vec::new(),
         }
     }
 
@@ -101,7 +102,7 @@ impl<T> Paged<T> {
     pub fn map<U, F: FnMut(T) -> U>(self, f: F) -> Paged<U> {
         Paged {
             total: self.total,
-            list: self.list.into_iter().map(f).collect(),
+            items: self.items.into_iter().map(f).collect(),
         }
     }
 }

@@ -73,7 +73,7 @@ impl RestGroup {
     pub(crate) fn apply_config(&mut self, config: &crate::config::Config) {
         let key = format!("web.restGroups.{}", self.name);
         if config.contains_key(&key)
-            && let Ok(overrides) = config.unmarshal_key::<ServerConfig>(&key)
+            && let Ok(overrides) = config.section::<ServerConfig>(&key)
         {
             let port = overrides.port;
             self.server_config = overrides;
@@ -234,7 +234,7 @@ pub const REST_GROUPS_CONFIG_KEY: &str = "web.restGroups";
 pub(crate) fn default_server_config(config: &crate::config::Config) -> ServerConfig {
     if config.contains_key(SERVER_CONFIG_KEY) {
         config
-            .unmarshal_key::<ServerConfig>(SERVER_CONFIG_KEY)
+            .section::<ServerConfig>(SERVER_CONFIG_KEY)
             .unwrap_or_default()
     } else {
         ServerConfig::default()

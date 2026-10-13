@@ -18,7 +18,7 @@ use super::multipart::{MultipartForm, MultipartLimits};
 use super::route::{HandlerMeta, MetaOption};
 use crate::core::Context;
 use crate::util::Page;
-use crate::util::str_util::url_decode;
+use crate::util::percent_decode;
 
 /// Returned when a request body is asked for twice, or by two different accessors.
 const BODY_ALREADY_READ: &str = "the request body has already been consumed — a body can be read once, by either \
@@ -234,7 +234,8 @@ impl Request {
     }
 
     /// The server configuration this request was served with.
-    pub fn server_config(&self) -> &Arc<ServerConfig> {
+    #[must_use]
+    pub fn server_config(&self) -> &ServerConfig {
         &self.inner.server_config
     }
 
@@ -249,11 +250,6 @@ impl Request {
     /// A path parameter, e.g. the `id` in `/users/:id`.
     pub fn param(&self, key: &str) -> Option<&str> {
         self.inner.params.get(key).map(String::as_str)
-    }
-
-    /// A path parameter, or `""` when absent.
-    pub fn param_or_empty(&self, key: &str) -> &str {
-        self.param(key).unwrap_or("")
     }
 
     /// A path parameter, or `default` when absent.
@@ -289,14 +285,9 @@ impl Request {
             .get_or_init(|| parse_pairs(self.query_string().unwrap_or("")))
     }
 
-    /// A query string parameter, or `""` when absent.
-    pub fn query_or_empty(&self, key: &str) -> String {
-        self.query(key).unwrap_or_default().to_string()
-    }
-
     /// A query string parameter, or `default` when absent.
-    pub fn query_or(&self, key: &str, default: &str) -> String {
-        self.query(key).unwrap_or(default).to_string()
+    pub fn query_or<'a>(&'a self, key: &str, default: &'a str) -> &'a str {
+        self.query(key).unwrap_or(default)
     }
 
     /// A query parameter parsed as `i64`; `0` when absent or unparsable.
@@ -545,26 +536,20 @@ impl Request {
         })
     }
 
-    /// A string field of the JSON body.
-    pub fn json_string(&self, key: &str) -> Result<String> {
+    /// A string field of the JSON body, or `default` when absent.
+    pub fn json_str_or(&self, key: &str, default: &str) -> Result<String> {
         let object = self.json_object()?;
-        Ok(object.get(key).map(value_to_string).unwrap_or_default())
-    }
-
-    /// An `i64` field of the JSON body.
-    pub fn json_i64(&self, key: &str) -> Result<i64> {
-        self.json_i64_or(key, 0)
+        Ok(object
+            .get(key)
+            .map(value_to_string)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| default.to_owned()))
     }
 
     /// An `i64` field of the JSON body, or `default` when absent.
     pub fn json_i64_or(&self, key: &str, default: i64) -> Result<i64> {
         let object = self.json_object()?;
         Ok(object.get(key).map(value_to_i64).unwrap_or(default))
-    }
-
-    /// An `f64` field of the JSON body.
-    pub fn json_f64(&self, key: &str) -> Result<f64> {
-        self.json_f64_or(key, 0.0)
     }
 
     /// An `f64` field of the JSON body, or `default` when absent.
@@ -608,7 +593,8 @@ impl Request {
     // -------------------------------------------------------------- metadata
 
     /// The metadata attached to the matched route.
-    pub fn handler_meta(&self) -> &Arc<HandlerMeta> {
+    #[must_use]
+    pub fn handler_meta(&self) -> &HandlerMeta {
         &self.inner.meta
     }
 
@@ -845,9 +831,9 @@ pub(crate) fn parse_pairs(input: &str) -> HashMap<String, String> {
             Some((k, v)) => (k, v),
             None => (pair, ""),
         };
-        let key = url_decode(key);
+        let key = percent_decode(key);
         // The first occurrence of a repeated key wins, as it does in the Go original.
-        out.entry(key).or_insert_with(|| url_decode(value));
+        out.entry(key).or_insert_with(|| percent_decode(value));
     }
     out
 }
@@ -891,8 +877,8 @@ mod tests {
             Context::empty(),
             None,
         );
-        assert_eq!(req.json_string("name").unwrap(), "alice");
-        assert_eq!(req.json_i64("age").unwrap(), 31);
+        assert_eq!(req.json_str_or("name", "").unwrap(), "alice");
+        assert_eq!(req.json_i64_or("age", 0).unwrap(), 31);
         assert!(req.json_bool_or("admin", false).unwrap());
         assert_eq!(req.json_i64_or("missing", 7).unwrap(), 7);
     }

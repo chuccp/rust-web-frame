@@ -15,11 +15,13 @@ pub struct Message {
     pub code: i32,
     /// Payload. `null` when there is none.
     pub data: Value,
-    /// Short status text.
-    pub msg: String,
+    /// Short status text. Serialised as `msg`.
+    #[serde(rename = "msg")]
+    pub message: String,
     /// Optional discriminator for clients that render different payload shapes.
+    /// Serialised as `type`, which is a Rust keyword.
     #[serde(rename = "type")]
-    pub ty: String,
+    pub kind: String,
 }
 
 impl Default for Message {
@@ -27,8 +29,8 @@ impl Default for Message {
         Self {
             code: code::OK,
             data: Value::Null,
-            msg: String::from("ok"),
-            ty: String::new(),
+            message: String::from("ok"),
+            kind: String::new(),
         }
     }
 }
@@ -40,9 +42,9 @@ impl Message {
     }
 
     /// Success with a custom message.
-    pub fn with_msg(msg: impl Into<String>) -> Self {
+    pub fn with_message(message: impl Into<String>) -> Self {
         Self {
-            msg: msg.into(),
+            message: message.into(),
             ..Self::default()
         }
     }
@@ -56,16 +58,16 @@ impl Message {
     }
 
     /// Success carrying a payload tagged with a `type` discriminator.
-    pub fn data_type(ty: impl Into<String>, data: impl Into<Value>) -> Self {
+    pub fn typed(kind: impl Into<String>, data: impl Into<Value>) -> Self {
         Self {
-            ty: ty.into(),
+            kind: kind.into(),
             data: data.into(),
             ..Self::default()
         }
     }
 
     /// A response with an explicit code and payload.
-    pub fn data_code(code: i32, data: impl Into<Value>) -> Self {
+    pub fn with_code(code: i32, data: impl Into<Value>) -> Self {
         Self {
             code,
             data: data.into(),
@@ -78,8 +80,8 @@ impl Message {
         Self {
             code: 301,
             data: json!(url.into()),
-            msg: String::from("redirect"),
-            ty: String::new(),
+            message: String::from("redirect"),
+            kind: String::new(),
         }
     }
 

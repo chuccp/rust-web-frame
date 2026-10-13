@@ -68,10 +68,10 @@ fn column_expr(name: &str) -> Expr {
 /// #     pub enum Relation {}
 /// #     impl ActiveModelBehavior for ActiveModel {}
 /// # }
-/// # use rust_web_frame::model::EntryModel;
-/// # async fn demo(users: EntryModel<entity::Entity>) -> Result<(), rust_web_frame::web::Error> {
+/// # use rust_web_frame::model::Model;
+/// # async fn demo(users: Model<entity::Entity>) -> Result<(), rust_web_frame::web::Error> {
 /// let adults = users.query()
-///     .where_("age > ?", rust_web_frame::args![18])
+///     .filter("age > ?", rust_web_frame::args![18])
 ///     .order_by_desc("id")
 ///     .list(100)
 ///     .await?;
@@ -121,7 +121,7 @@ impl<E: EntityTrait> Query<E> {
     }
 
     /// Adds a `WHERE` condition.
-    pub fn where_(
+    pub fn filter(
         mut self,
         condition: impl Into<String>,
         values: impl IntoIterator<Item = Value>,
@@ -133,20 +133,20 @@ impl<E: EntityTrait> Query<E> {
 
     /// Adds a `WHERE` condition only when `value` is `Some` — the usual shape of an
     /// optional filter.
-    pub fn where_if(self, value: Option<Value>, condition: impl Into<String>) -> Self {
+    pub fn filter_if(self, value: Option<Value>, condition: impl Into<String>) -> Self {
         match value {
-            Some(value) => self.where_(condition, [value]),
+            Some(value) => self.filter(condition, [value]),
             None => self,
         }
     }
 
     /// Adds `WHERE column = ?`.
-    pub fn where_eq(self, column: &str, value: impl Into<Value>) -> Self {
-        self.where_(format!("{column} = ?"), [value.into()])
+    pub fn filter_eq(self, column: &str, value: impl Into<Value>) -> Self {
+        self.filter(format!("{column} = ?"), [value.into()])
     }
 
     /// Adds `WHERE column IN (...)`.
-    pub fn where_in<V: Into<Value>>(
+    pub fn filter_in<V: Into<Value>>(
         mut self,
         column: &str,
         values: impl IntoIterator<Item = V>,
@@ -154,7 +154,7 @@ impl<E: EntityTrait> Query<E> {
         let values: Vec<Value> = values.into_iter().map(Into::into).collect();
         if values.is_empty() {
             // `IN ()` is invalid SQL; an empty set matches nothing.
-            return self.where_("1 = 0", Vec::<Value>::new());
+            return self.filter("1 = 0", Vec::<Value>::new());
         }
         let placeholders = vec!["?"; values.len()].join(", ");
         self.conditions
@@ -324,7 +324,7 @@ impl<E: EntityTrait> Query<E> {
 
     /// Returns one page of rows wrapped in a [`Paged`], ready to be returned from a
     /// handler.
-    pub async fn page_for_web(self, page: &Page) -> Result<Paged<E::Model>> {
+    pub async fn paged(self, page: &Page) -> Result<Paged<E::Model>> {
         let (list, total) = self.page(page).await?;
         Ok(Paged::new(total, list))
     }
@@ -332,7 +332,7 @@ impl<E: EntityTrait> Query<E> {
     /// Reads a projection into `T`.
     ///
     /// ```no_run
-    /// # use rust_web_frame::model::EntryModel;
+    /// # use rust_web_frame::model::Model;
     /// #[derive(Debug, sea_orm::FromQueryResult)]
     /// struct CityStat { city: String, total: i64 }
     ///
@@ -349,7 +349,7 @@ impl<E: EntityTrait> Query<E> {
     /// #     pub enum Relation {}
     /// #     impl ActiveModelBehavior for ActiveModel {}
     /// # }
-    /// # async fn demo(m: EntryModel<entity::Entity>) -> Result<(), rust_web_frame::web::Error> {
+    /// # async fn demo(m: Model<entity::Entity>) -> Result<(), rust_web_frame::web::Error> {
     /// let stats = m.query()
     ///     .select_expr("city, COUNT(*) AS total")
     ///     .group_by("city")
@@ -427,7 +427,7 @@ impl<E: EntityTrait> Update<E> {
     }
 
     /// Restricts the update with a `WHERE` condition.
-    pub fn where_(
+    pub fn filter(
         mut self,
         condition: impl Into<String>,
         values: impl IntoIterator<Item = Value>,
@@ -438,9 +438,9 @@ impl<E: EntityTrait> Update<E> {
     }
 
     /// Restricts the update to a primary key.
-    pub fn where_pk(self, value: impl Into<Value>) -> Self {
+    pub fn by_pk(self, value: impl Into<Value>) -> Self {
         let column = primary_key_name::<E>();
-        self.where_(format!("{column} = ?"), [value.into()])
+        self.filter(format!("{column} = ?"), [value.into()])
     }
 
     /// Runs the update against another connection.
@@ -455,7 +455,7 @@ impl<E: EntityTrait> Update<E> {
     }
 
     /// Executes the update, returning how many rows changed.
-    pub async fn exec(self) -> Result<u64> {
+    pub async fn execute(self) -> Result<u64> {
         if self.assignments.is_empty() {
             return Ok(0);
         }
@@ -496,7 +496,7 @@ impl<E: EntityTrait> Delete<E> {
     }
 
     /// Restricts the delete with a `WHERE` condition.
-    pub fn where_(
+    pub fn filter(
         mut self,
         condition: impl Into<String>,
         values: impl IntoIterator<Item = Value>,
@@ -507,9 +507,9 @@ impl<E: EntityTrait> Delete<E> {
     }
 
     /// Restricts the delete to a primary key.
-    pub fn where_pk(self, value: impl Into<Value>) -> Self {
+    pub fn by_pk(self, value: impl Into<Value>) -> Self {
         let column = primary_key_name::<E>();
-        self.where_(format!("{column} = ?"), [value.into()])
+        self.filter(format!("{column} = ?"), [value.into()])
     }
 
     /// Runs the delete against another connection.
@@ -519,7 +519,7 @@ impl<E: EntityTrait> Delete<E> {
     }
 
     /// Executes the delete, returning how many rows were removed.
-    pub async fn exec(self) -> Result<u64> {
+    pub async fn execute(self) -> Result<u64> {
         let backend = self.db.get_database_backend();
         let mut query = SeaQuery::delete();
         query.from_table(Alias::new(self.table.as_str()));
@@ -538,7 +538,7 @@ impl<E: EntityTrait> Delete<E> {
 /// An aggregate query: `SUM`, `COUNT`, `AVG`, `GROUP BY`, `HAVING`, `DISTINCT`.
 ///
 /// ```no_run
-/// # use rust_web_frame::model::EntryModel;
+/// # use rust_web_frame::model::Model;
 /// #[derive(Debug, sea_orm::FromQueryResult)]
 /// struct CityStat { city: String, total: i64 }
 ///
@@ -555,7 +555,7 @@ impl<E: EntityTrait> Delete<E> {
 /// #     pub enum Relation {}
 /// #     impl ActiveModelBehavior for ActiveModel {}
 /// # }
-/// # async fn demo(m: EntryModel<entity::Entity>) -> Result<(), rust_web_frame::web::Error> {
+/// # async fn demo(m: Model<entity::Entity>) -> Result<(), rust_web_frame::web::Error> {
 /// let stats = m.aggregate()
 ///     .select("city, SUM(amount) AS total")
 ///     .group_by("city")
@@ -597,7 +597,7 @@ impl<E: EntityTrait> Aggregate<E> {
     }
 
     /// Adds a `WHERE` condition.
-    pub fn where_(
+    pub fn filter(
         mut self,
         condition: impl Into<String>,
         values: impl IntoIterator<Item = Value>,
@@ -692,7 +692,7 @@ impl<E: EntityTrait> Aggregate<E> {
     /// Runs the aggregate and reads a single scalar, e.g. `SUM(amount)` or `COUNT(*)`.
     ///
     /// ```no_run
-    /// # use rust_web_frame::model::EntryModel;
+    /// # use rust_web_frame::model::Model;
     /// # mod entity {
     /// #     use sea_orm::entity::prelude::*;
     /// #     #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
@@ -706,7 +706,7 @@ impl<E: EntityTrait> Aggregate<E> {
     /// #     pub enum Relation {}
     /// #     impl ActiveModelBehavior for ActiveModel {}
     /// # }
-    /// # async fn demo(orders: EntryModel<entity::Entity>) -> Result<(), rust_web_frame::web::Error> {
+    /// # async fn demo(orders: Model<entity::Entity>) -> Result<(), rust_web_frame::web::Error> {
     /// let total: Option<f64> = orders.aggregate().select("SUM(amount)").value().await?;
     /// # Ok(())
     /// # }
@@ -750,7 +750,7 @@ async fn count_rows<E: EntityTrait>(select: Select<E>, db: &Database) -> Result<
 }
 
 /// The primary-key column name of an entity.
-pub fn primary_key_name<E: EntityTrait>() -> String {
+pub(crate) fn primary_key_name<E: EntityTrait>() -> String {
     let primary_key = E::PrimaryKey::iter()
         .next()
         .expect("every entity has at least one primary key column");

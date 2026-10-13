@@ -11,7 +11,7 @@ use axum::http::Method;
 
 use super::BoxFuture;
 use super::error::{Error, Result};
-use super::filter::{HandlerFunc, all_methods, handler, standard_methods};
+use super::filter::{Handler, all_methods, handler, standard_methods};
 use super::request::Request;
 use super::response::{Response, ResponseBody};
 use super::route::{Route, RouteHandle, RouteKind};
@@ -25,7 +25,7 @@ use super::ws::{WebSocketHandler, WebSocketStream};
 /// let routes = Routes::new();
 /// routes.get("/", handler(|_| async { Ok("hello world") }));
 /// routes.get("/users/:id", handler(|req| async move {
-///     Ok(format!("user {}", req.param_or_empty("id")))
+///     Ok(format!("user {}", req.param_or("id", "?")))
 /// }));
 /// assert_eq!(routes.len(), 2);
 /// ```
@@ -64,7 +64,7 @@ impl Routes {
         &self,
         methods: impl IntoIterator<Item = Method>,
         path: &str,
-        endpoint: HandlerFunc,
+        endpoint: Handler,
     ) -> RouteHandle {
         self.push(Route::new(path, methods.into_iter().collect(), endpoint))
     }
@@ -74,7 +74,7 @@ impl Routes {
         &self,
         methods: Vec<Method>,
         path: &str,
-        endpoint: HandlerFunc,
+        endpoint: Handler,
         kind: RouteKind,
     ) -> RouteHandle {
         self.push(Route::new(path, methods, endpoint).of_kind(kind))
@@ -99,32 +99,32 @@ impl Routes {
     }
 
     /// Registers a `GET` route.
-    pub fn get(&self, path: &str, endpoint: HandlerFunc) -> RouteHandle {
+    pub fn get(&self, path: &str, endpoint: Handler) -> RouteHandle {
         self.on([Method::GET], path, endpoint)
     }
 
     /// Registers a `POST` route.
-    pub fn post(&self, path: &str, endpoint: HandlerFunc) -> RouteHandle {
+    pub fn post(&self, path: &str, endpoint: Handler) -> RouteHandle {
         self.on([Method::POST], path, endpoint)
     }
 
     /// Registers a `PUT` route.
-    pub fn put(&self, path: &str, endpoint: HandlerFunc) -> RouteHandle {
+    pub fn put(&self, path: &str, endpoint: Handler) -> RouteHandle {
         self.on([Method::PUT], path, endpoint)
     }
 
     /// Registers a `DELETE` route.
-    pub fn delete(&self, path: &str, endpoint: HandlerFunc) -> RouteHandle {
+    pub fn delete(&self, path: &str, endpoint: Handler) -> RouteHandle {
         self.on([Method::DELETE], path, endpoint)
     }
 
     /// Registers a `PATCH` route.
-    pub fn patch(&self, path: &str, endpoint: HandlerFunc) -> RouteHandle {
+    pub fn patch(&self, path: &str, endpoint: Handler) -> RouteHandle {
         self.on([Method::PATCH], path, endpoint)
     }
 
     /// Registers a route answering every HTTP method.
-    pub fn any(&self, path: &str, endpoint: HandlerFunc) -> RouteHandle {
+    pub fn any(&self, path: &str, endpoint: Handler) -> RouteHandle {
         self.on(all_methods(), path, endpoint)
     }
 
@@ -185,7 +185,7 @@ impl Routes {
         let pattern = format!("{}/*filepath", path.trim_end_matches('/'));
         let handler = handler(move |req: Request| {
             let directory = Arc::clone(&directory);
-            async move { serve_file(&directory, req.param_or_empty("filepath")).await }
+            async move { serve_file(&directory, req.param_or("filepath", "")).await }
         });
         self.push_kind(
             vec![Method::GET, Method::HEAD],

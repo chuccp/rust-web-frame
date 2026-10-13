@@ -97,15 +97,15 @@ users.create_table().await?;                       // 从实体推导建表语�
 let user  = users.find_by_pk(1).await?;            // Option<user::Model>
 let all   = users.find_all().await?;               // Vec<user::Model>
 let adults = users.query()
-    .where_("age >= ?", args![18])
+    .filter("age >= ?", args![18])
     .order_by_desc("age")
     .list(50)
     .await?;
-let total = users.query().where_("age >= ?", args![18]).count().await?;
+let total = users.query().filter("age >= ?", args![18]).count().await?;
 let (rows, total) = users.page(&Page::new(1, 10)).await?;
-let paged = users.page_for_web(&Page::new(1, 10)).await?;   // { total, list }
+let paged = users.paged(&Page::new(1, 10)).await?;   // { total, list }
 
-users.update().where_pk(1).set("name", "bob").exec().await?;
+users.update().by_pk(1).set("name", "bob").execute().await?;
 users.delete_by_pk(1).await?;
 ```
 
@@ -135,8 +135,8 @@ let sum: Option<f64> = orders.aggregate().select("SUM(amount)").value().await?;
 ```rust
 db.transaction(|tx| async move {
     let accounts = AccountModel::new(tx);
-    accounts.update().where_pk(from).set("balance", lower).exec().await?;
-    accounts.update().where_pk(to).set("balance", higher).exec().await?;
+    accounts.update().by_pk(from).set("balance", lower).execute().await?;
+    accounts.update().by_pk(to).set("balance", higher).execute().await?;
     Ok(())                       // Ok 提交，Err 回滚
 })
 .await?;
@@ -238,7 +238,7 @@ assert!(config.contains_key("web.server"));
 #[serde(default)]
 struct AppSection { greeting: String }
 
-let section: AppSection = config.unmarshal_key("app")?;
+let section: AppSection = config.section("app")?;
 ```
 
 ---
@@ -321,7 +321,7 @@ async fn upload(req: Request) -> Result<Message> {
 | **流式** | `SseStream`、`WebSocketStream` |
 | **上传** | `MultipartForm`、`UploadedFile`、`sanitise_file_name`，流式解析并落临时文件 |
 | **扩展点** | `Filter`、`Converter`、`Runner`、`Rest`、`Service` |
-| **数据** | `db::Database`、`db::transaction`、`Model<E>`、`EntryModel<E>`、`define_model!`、`ModelGroup`、`Transaction` |
+| **数据** | `db::Database`、`db::transaction`、`Model<E>`、`define_model!`、`ModelGroup`、`Transaction` |
 | **分页** | `Page`、`Paged<T>` |
 | **组件** | `Service`、`Rest`、`Filter`、`Runner`、`Converter`、`Context`、`RestGroup`、`Runtime`、`Builder` |
 
@@ -401,10 +401,17 @@ feature 开关：`sqlite`（默认）、`mysql`、`postgres`。
 | `c.Query("page")` | `req.query("page") -> Option<&str>` | "不存在"体现在类型里；`query_or`、`query_i64` 覆盖顺手的情况。 |
 | `Query.One()` 返回零值 + nil error | `query().one() -> Result<Option<T>>` | "有没有查到"由类型回答；`get_by_pk` 则直接返回 404。 |
 | `Model.Save(&user)`（upsert） | `insert(am)`、`update_by_pk(am)` | 两个操作两个方法，不在"主键是否设置"上藏分支。 |
-| 内嵌 `*model.EntryModel[T, PK]` | `define_model!` → `Deref<Target = EntryModel<E>>` | 用宏写出 Rust 写不出的"内嵌"。 |
+| `Model[T]` + `EntryModel[T, PK]` | 只有一个 `Model<E>` | 拆成两个是因为 Go 的 model 可以没有主键；sea-orm 的每个实体都有，第二个类型没换来任何东西。 |
+| 内嵌 `*model.EntryModel[T, PK]` | `define_model!` → `Deref<Target = Model<E>>` | 用宏写出 Rust 写不出的"内嵌"。 |
+| `Query.Where("age > ?", 18)` | `query.filter("age > ?", args![18])` | `where` 是 Rust 关键字；所有需要条件过滤的 crate 都叫它 `filter`。 |
+| `Query.IsExist()` | `exists()` | 布尔语义读起来就是谓词。 |
+| `PageForWeb()` | `paged()` | —— |
+| `Viper.UnmarshalKey` | `config.section::<T>("web.server")` | "反序列化一个配置段"不叫 unmarshal key。 |
+| `Message{code, data, msg, type}` | `Message{code, data, message, kind}`（serde rename 保持线上格式） | `type` 是关键字，`msg` 是缩写。 |
+| `PageAble.List` | `Paged.items`（序列化为 `list`） | —— |
+| `gin.HandlerFunc` | `web::Handler` | 按"它是什么"命名，而不是按引入它的那个包。 |
 | 按结构体名反射 | 以 `TypeId` 为键的注册表，`ctx.service::<T>()` | Rust 没有运行时反射。 |
 | `ctx.Get(...).WithMeta(...)` 返回 `*Route` | `ctx.get(...)` 返回 `RouteHandle`，`with_meta` 消费它 | 惯用的 Rust builder，链式调用不变。 |
-| `pageAble` | `Paged<T>` | —— |
 | `c.MultipartForm()`（解析进内存，超过 32 MiB 落盘） | `req.multipart().await?`（流式，超过 1 MiB 落盘） | 流式处理让大文件根本不进堆，而不只是"控制在一个阈值以内"。 |
 
 这一版没有实现：验证码、二维码、邮件、反向代理、TLS 监听，以及 `component/` 下的那些组件

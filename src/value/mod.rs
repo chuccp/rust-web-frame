@@ -8,18 +8,8 @@ use serde_json::{Map, Value};
 
 pub use serde_json::{Number, json};
 
-use crate::web::{Error, Result};
-
 /// A JSON object.
 pub type Object = Map<String, Value>;
-
-/// Parses a JSON document. An empty input yields `Value::Null` rather than an error.
-pub fn decode_json(bytes: &[u8]) -> Result<Value> {
-    if bytes.is_empty() {
-        return Ok(Value::Null);
-    }
-    serde_json::from_slice(bytes).map_err(Error::from)
-}
 
 /// Reads a value at a dotted path, e.g. `web.server.port`.
 pub fn get_path<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
@@ -203,11 +193,5 @@ mod tests {
 
         merge(&mut base, json!({"a": {"now": "an object"}}));
         assert_eq!(base["a"], json!({"now": "an object"}));
-    }
-
-    #[test]
-    fn empty_bodies_decode_to_null() {
-        assert_eq!(decode_json(b"").unwrap(), Value::Null);
-        assert!(decode_json(b"{").is_err());
     }
 }

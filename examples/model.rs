@@ -45,8 +45,8 @@ pub mod user {
 
 // --------------------------------------------------------------- the model
 //
-// `define_model!` writes the newtype, a `Deref` to `EntryModel`, and the trait impls the
-// framework needs. Everything `EntryModel` offers is then available on `UserModel`.
+// `define_model!` writes the newtype, a `Deref` to `Model`, and the trait impls the
+// framework needs. Everything `Model` offers is then available on `UserModel`.
 
 define_model!(
     /// Users of the shop.
@@ -71,7 +71,7 @@ impl UserModel {
     /// Transfers money between two accounts atomically.
     pub async fn transfer(&self, from: i64, to: i64, amount: i64) -> Result<()> {
         Transaction::new(self.db().clone())
-            .exec(|tx| async move {
+            .run(|tx| async move {
                 let accounts = UserModel::new(tx);
                 let payer = accounts.get_by_pk(from).await?;
                 if payer.balance < amount {
@@ -79,15 +79,15 @@ impl UserModel {
                 }
                 accounts
                     .update()
-                    .where_pk(from)
+                    .by_pk(from)
                     .set("balance", payer.balance - amount)
-                    .exec()
+                    .execute()
                     .await?;
                 accounts
                     .update()
-                    .where_pk(to)
+                    .by_pk(to)
                     .set("balance", payer.balance + amount)
-                    .exec()
+                    .execute()
                     .await?;
                 Ok(())
             })
@@ -121,9 +121,7 @@ impl UserController {
 
     async fn list(req: Request) -> Result<Message> {
         let page = req.page()?;
-        Ok(Message::data(json!(
-            Self::model(&req).page_for_web(&page).await?
-        )))
+        Ok(Message::data(json!(Self::model(&req).paged(&page).await?)))
     }
 
     async fn show(req: Request) -> Result<Message> {
@@ -136,7 +134,7 @@ impl UserController {
     async fn adults(_req: Request) -> Result<Message> {
         let users = Self::model(&_req)
             .query()
-            .where_("age >= ?", args![18])
+            .filter("age >= ?", args![18])
             .order_by_desc("age")
             .list(50)
             .await?;
@@ -172,7 +170,7 @@ impl UserController {
         Self::model(&req)
             .transfer(payload.from, payload.to, payload.amount)
             .await?;
-        Ok(Message::with_msg("transferred"))
+        Ok(Message::with_message("transferred"))
     }
 }
 

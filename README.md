@@ -100,21 +100,22 @@ users.create_table().await?;                       // derives the schema from th
 let user  = users.find_by_pk(1).await?;            // Option<user::Model>
 let all   = users.find_all().await?;               // Vec<user::Model>
 let adults = users.query()
-    .where_("age >= ?", args![18])
+    .filter("age >= ?", args![18])
     .order_by_desc("age")
     .list(50)
     .await?;
-let total = users.query().where_("age >= ?", args![18]).count().await?;
+let total = users.query().filter("age >= ?", args![18]).count().await?;
 let (rows, total) = users.page(&Page::new(1, 10)).await?;
-let paged = users.page_for_web(&Page::new(1, 10)).await?;   // { total, list }
+let paged = users.paged(&Page::new(1, 10)).await?;   // { total, items }
 
-users.update().where_pk(1).set("name", "bob").exec().await?;
+users.update().by_pk(1).set("name", "bob").execute().await?;
 users.delete_by_pk(1).await?;
 ```
 
-**String conditions, bound parameters.** `Where("age > ?", 18)` is written exactly as in the
-Go original. `?` is understood by every backend — sea-query rewrites it to `$1` for
-PostgreSQL — so there is no SQL injection surface and no per-dialect code.
+**String conditions, bound parameters.** `filter("age > ?", args![18])` reads the way the
+Go original's `Where("age > ?", 18)` does. `?` is understood by every backend — sea-query
+rewrites it to `$1` for PostgreSQL — so there is no SQL injection surface and no
+per-dialect code.
 
 **Aggregates.** `SUM`, `COUNT`, `AVG`, `GROUP BY`, `HAVING`:
 
@@ -138,8 +139,8 @@ built from it participate in the transaction:
 ```rust
 db.transaction(|tx| async move {
     let accounts = AccountModel::new(tx);
-    accounts.update().where_pk(from).set("balance", lower).exec().await?;
-    accounts.update().where_pk(to).set("balance", higher).exec().await?;
+    accounts.update().by_pk(from).set("balance", lower).execute().await?;
+    accounts.update().by_pk(to).set("balance", higher).execute().await?;
     Ok(())                       // Ok commits, Err rolls back
 })
 .await?;
@@ -243,7 +244,7 @@ assert!(config.contains_key("web.server"));
 #[serde(default)]
 struct AppSection { greeting: String }
 
-let section: AppSection = config.unmarshal_key("app")?;
+let section: AppSection = config.section("app")?;
 ```
 
 ---
@@ -328,7 +329,7 @@ since the body holds files rather than JSON.
 | **Streaming** | `SseStream`, `WebSocketStream` |
 | **Uploads** | `MultipartForm`, `UploadedFile`, `sanitise_file_name`, streamed and spilling to temp files |
 | **Extensibility** | `Filter`, `Converter`, `Runner`, `Rest`, `Service` |
-| **Data** | `db::Database`, `db::transaction`, `Model<E>`, `EntryModel<E>`, `define_model!`, `ModelGroup`, `Transaction` |
+| **Data** | `db::Database`, `db::transaction`, `Model<E>`, `define_model!`, `ModelGroup`, `Transaction` |
 | **Pagination** | `Page`, `Paged<T>` |
 | **Components** | `Service`, `Rest`, `Filter`, `Runner`, `Converter`, `Context`, `RestGroup`, `Runtime`, `Builder` |
 
@@ -409,10 +410,17 @@ The design is the same; the language forces a few honest changes.
 | `c.Query("page")` | `req.query("page") -> Option<&str>` | Absence is in the type; `query_or`, `query_i64` cover the ergonomic cases. |
 | `Query.One()` returns a zero value + nil error | `query().one() -> Result<Option<T>>` | The type answers "did I find anything?". `get_by_pk` returns `404` instead. |
 | `Model.Save(&user)` (upsert) | `insert(am)`, `update_by_pk(am)` | Two operations, two methods; no hidden branch on whether the key is set. |
-| Embedding `*model.EntryModel[T, PK]` | `define_model!` → `Deref<Target = EntryModel<E>>` | The macro writes the embedding Rust cannot. |
+| `Model[T]` + `EntryModel[T, PK]` | one `Model<E>` | The split exists because Go models can lack a primary key; every sea-orm entity has one, so the second type bought nothing. |
+| Embedding `*model.EntryModel[T, PK]` | `define_model!` → `Deref<Target = Model<E>>` | The macro writes the embedding Rust cannot. |
+| `Query.Where("age > ?", 18)` | `query.filter("age > ?", args![18])` | `where` is a Rust keyword, and every crate that needs to filter calls it `filter`. |
+| `Query.IsExist()` | `exists()` | Boolean names read as predicates. |
+| `PageForWeb()` | `paged()` | — |
+| `Viper.UnmarshalKey` | `config.section::<T>("web.server")` | Deserialising a config section is not "unmarshalling a key". |
+| `Message{code, data, msg, type}` | `Message{code, data, message, kind}` (serde renames keep the wire format) | `type` is a keyword, and `msg` is an abbreviation. |
+| `PageAble.List` | `Paged.items` (serialised as `list`) | — |
+| `gin.HandlerFunc` | `web::Handler` | Named after what it is, not after the package that introduced it. |
 | Reflection by struct name | `TypeId`-keyed registry, `ctx.service::<T>()` | No runtime reflection. |
 | `ctx.Get(...).WithMeta(...)` returns `*Route` | `ctx.get(...)` returns `RouteHandle`, `with_meta` consumes it | Idiomatic Rust builder, same chaining. |
-| `pageAble` | `Paged<T>` | — |
 | `c.MultipartForm()` (parses into memory, spills past 32 MiB) | `req.multipart().await?` (streamed, spills past 1 MiB) | Streaming keeps a large upload off the heap entirely, not just under a threshold. |
 
 Not implemented in this iteration: captcha, QR codes, mail, reverse proxy, the TLS

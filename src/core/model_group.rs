@@ -279,7 +279,7 @@ mod tests {
 
         let widgets = ctx.service::<WidgetModel>().unwrap();
         assert_eq!(widgets.table_name(), "t_widget");
-        assert!(widgets.is_exist().await.unwrap());
+        assert!(widgets.exists().await.unwrap());
         assert_eq!(group.model_names().len(), 1);
     }
 

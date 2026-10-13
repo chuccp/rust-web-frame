@@ -62,7 +62,7 @@ impl Converter for DefaultConverter {
         // Cookies queued by the handler travel on every kind of response.
         let cookies = req.take_cookies_to_set();
         for cookie in cookies {
-            response.try_set_header("set-cookie", cookie.to_header_value());
+            response.set_header("set-cookie", cookie.to_header_value());
         }
 
         let status = response.status();
@@ -127,8 +127,8 @@ pub fn error_envelope(error: &Error) -> Message {
     Message {
         code: error.code,
         data: serde_json::Value::Null,
-        msg: error.client_message(),
-        ty: String::new(),
+        message: error.client_message(),
+        kind: String::new(),
     }
 }
 
@@ -151,7 +151,7 @@ async fn render_file(file: &FileResponse) -> axum::response::Response {
 
 /// Guesses a `Content-Type` from a file name.
 #[must_use]
-pub fn content_type_for(name: &str) -> &'static str {
+pub(crate) fn content_type_for(name: &str) -> &'static str {
     match name
         .rsplit('.')
         .next()

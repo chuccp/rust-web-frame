@@ -54,7 +54,7 @@ src/
     multipart.rs    MultipartForm, UploadedFile, streamed parsing, temp-file spilling
     file.rs sse.rs ws.rs
   model/          the ORM layer
-    mod.rs          Model<E>, EntryModel<E>, TableEntity/Table, define_model!, Transaction
+    mod.rs          Model<E>, TableEntity/Table, define_model!, Transaction
     query.rs        Query<E>, Update<E>, Delete<E>, Aggregate<E>
   db/             Database (pool *or* transaction), DbConfig, connect, transaction
   config/         Config — dotted-key lookup, auto-loading, deep merge
@@ -152,9 +152,14 @@ construction.
 
 ### The model layer (`model/`)
 
-`Model<E>` is plain CRUD; `EntryModel<E>` adds primary-key shortcuts; `define_model!`
-writes the newtype + `Deref` + `TableEntity` impl that Rust cannot express as embedding.
-`TableEntity` gets `Table` for free via a blanket impl, which is what `ModelGroup` stores.
+`Model<E>` carries both the plain CRUD and the primary-key shortcuts. The Go original
+splits them into `Model[T]` and `EntryModel[T, PK]` because its models may lack a key;
+every sea-orm entity has one, so the split bought nothing here.
+
+`define_model!` writes the newtype + `Deref` + `TableEntity` impl that Rust cannot express
+as embedding. `TableEntity` (the entity-facing trait: `type Entity`, `as_model()`) gets
+`Table` (the object-safe one `ModelGroup` stores) for free via a blanket impl — the split
+exists because `dyn Table` cannot name an unspecified associated type.
 
 Conditions are SQL fragments with `?` placeholders — never string-interpolated values.
 `Query::build` composes them through `Expr::cust_with_values`, which sea-query rewrites

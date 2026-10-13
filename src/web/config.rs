@@ -33,7 +33,9 @@ pub struct ServerConfig {
     /// Directories served as static files when no route matches.
     pub locations: Vec<PathBuf>,
     /// File served for unmatched browser requests — the SPA fallback.
-    pub page404: Option<PathBuf>,
+    /// Configured as `page404`, matching the Go original.
+    #[serde(rename = "page404")]
+    pub not_found_page: Option<PathBuf>,
     /// Maximum request body size in bytes. `0` means the 10 MiB default, `-1` means
     /// unlimited.
     pub max_body_size: i64,
@@ -56,7 +58,7 @@ impl Default for ServerConfig {
             port: DEFAULT_PORT,
             context_path: String::new(),
             locations: Vec::new(),
-            page404: None,
+            not_found_page: None,
             max_body_size: 0,
             max_upload_memory: 0,
             read_header_timeout: 0,
@@ -89,8 +91,8 @@ impl ServerConfig {
     }
 
     /// Sets the SPA fallback page.
-    pub fn with_page404(mut self, path: impl Into<PathBuf>) -> Self {
-        self.page404 = Some(path.into());
+    pub fn with_not_found_page(mut self, path: impl Into<PathBuf>) -> Self {
+        self.not_found_page = Some(path.into());
         self
     }
 
@@ -200,7 +202,10 @@ mod tests {
     fn camel_case_keys_round_trip() {
         let json = serde_json::to_value(ServerConfig::default()).unwrap();
         assert!(json.get("contextPath").is_some());
-        assert!(json.get("page404").is_some());
+        assert!(
+            json.get("page404").is_some(),
+            "the wire key keeps the Go spelling"
+        );
 
         let parsed: ServerConfig =
             serde_json::from_value(serde_json::json!({"port": 8080, "contextPath": "/api"}))

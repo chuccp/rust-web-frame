@@ -355,7 +355,7 @@ async fn a_filter_can_post_process_the_response() {
     impl Filter for Stamp {
         async fn handle(&self, chain: &mut FilterChain, req: Request) -> Result<Response> {
             let mut response = chain.next(req).await?;
-            response.try_set_header("x-served-by", "rust-web-frame");
+            response.set_header("x-served-by", "rust-web-frame");
             Ok(response)
         }
     }

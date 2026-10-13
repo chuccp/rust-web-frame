@@ -121,7 +121,7 @@ impl UserController {
     async fn delete(req: Request) -> Result<Message> {
         let service = Self::service(&req);
         service.delete(req.param_u64("id"))?;
-        Ok(Message::with_msg("deleted"))
+        Ok(Message::with_message("deleted"))
     }
 
     fn service(req: &Request) -> std::sync::Arc<UserService> {

@@ -57,12 +57,14 @@ impl Server {
     }
 
     /// The server's configuration.
-    pub fn config(&self) -> &Arc<ServerConfig> {
+    #[must_use]
+    pub fn config(&self) -> &ServerConfig {
         &self.config
     }
 
     /// The route table, for registering routes.
-    pub fn handles(&self) -> &Arc<Routes> {
+    #[must_use]
+    pub fn routes(&self) -> &Routes {
         &self.handles
     }
 
@@ -259,7 +261,7 @@ async fn dispatch(state: Dispatcher, req: AxumRequest) -> axum::response::Respon
         body,
         params,
         state.route.path().to_string(),
-        state.route.meta().clone(),
+        Arc::clone(state.route.shared_meta()),
         state.config.clone(),
         state.context.clone(),
         upgrade,
@@ -311,7 +313,7 @@ async fn fallback(state: FallbackState, req: AxumRequest) -> axum::response::Res
 
     // 2. The SPA fallback page, for browser navigations only.
     if accepts_html(&request)
-        && let Some(page) = &state.config.page404
+        && let Some(page) = &state.config.not_found_page
         && tokio::fs::try_exists(page).await.unwrap_or(false)
         && let Ok(bytes) = tokio::fs::read(page).await
     {
@@ -350,8 +352,8 @@ fn method_not_allowed(allowed: String) -> axum::response::Response {
     let message = Message {
         code: 405,
         data: serde_json::Value::Null,
-        msg: String::from("method not allowed"),
-        ty: String::new(),
+        message: String::from("method not allowed"),
+        kind: String::new(),
     };
     let body = serde_json::to_string(&message).unwrap_or_else(|_| String::from("{}"));
     axum::response::Response::builder()

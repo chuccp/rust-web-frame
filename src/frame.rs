@@ -12,7 +12,7 @@ use crate::core::{
 use crate::db;
 use crate::log::{self, LOG_CONFIG_KEY, LogConfig};
 use crate::model::Table;
-use crate::web::{Converter, Filter, HandlerFunc, Result, RouteHandle, Routes, Server};
+use crate::web::{Converter, Filter, Handler, Result, RouteHandle, Routes, Server};
 
 /// Assembles an application.
 ///
@@ -193,32 +193,32 @@ impl Builder {
     // ---------------------------------------------------------------- routes
 
     /// Registers a `GET` route on the default server.
-    pub fn get(&mut self, path: &str, endpoint: HandlerFunc) -> RouteHandle {
+    pub fn get(&mut self, path: &str, endpoint: Handler) -> RouteHandle {
         self.routes.get(path, endpoint)
     }
 
     /// Registers a `POST` route on the default server.
-    pub fn post(&mut self, path: &str, endpoint: HandlerFunc) -> RouteHandle {
+    pub fn post(&mut self, path: &str, endpoint: Handler) -> RouteHandle {
         self.routes.post(path, endpoint)
     }
 
     /// Registers a `PUT` route on the default server.
-    pub fn put(&mut self, path: &str, endpoint: HandlerFunc) -> RouteHandle {
+    pub fn put(&mut self, path: &str, endpoint: Handler) -> RouteHandle {
         self.routes.put(path, endpoint)
     }
 
     /// Registers a `DELETE` route on the default server.
-    pub fn delete(&mut self, path: &str, endpoint: HandlerFunc) -> RouteHandle {
+    pub fn delete(&mut self, path: &str, endpoint: Handler) -> RouteHandle {
         self.routes.delete(path, endpoint)
     }
 
     /// Registers a `PATCH` route on the default server.
-    pub fn patch(&mut self, path: &str, endpoint: HandlerFunc) -> RouteHandle {
+    pub fn patch(&mut self, path: &str, endpoint: Handler) -> RouteHandle {
         self.routes.patch(path, endpoint)
     }
 
     /// Registers a route answering every HTTP method.
-    pub fn any(&mut self, path: &str, endpoint: HandlerFunc) -> RouteHandle {
+    pub fn any(&mut self, path: &str, endpoint: Handler) -> RouteHandle {
         self.routes.any(path, endpoint)
     }
 
@@ -338,7 +338,7 @@ impl WebFrame {
     }
 
     async fn start(mut self) -> Result<Started> {
-        let logger = log::init(resolve_log_config(&self.config, self.logging));
+        let logger = log::init_logger(resolve_log_config(&self.config, self.logging));
         let _ = &logger;
 
         let default_config = crate::core::default_server_config(&self.config);
@@ -440,7 +440,7 @@ fn resolve_log_config(config: &Config, override_config: Option<LogConfig>) -> Lo
     if let Some(config) = override_config {
         return config;
     }
-    config.unmarshal_key(LOG_CONFIG_KEY).unwrap_or_default()
+    config.section(LOG_CONFIG_KEY).unwrap_or_default()
 }
 
 /// Resolves when the process receives `Ctrl+C`, or `SIGTERM` on Unix.

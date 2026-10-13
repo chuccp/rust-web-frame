@@ -11,7 +11,7 @@ use crate::db::Database;
 use crate::model::{Page, Transaction};
 use crate::web::Server as WebServer;
 use crate::web::{
-    Error, HandlerFunc, Request, Response, Result, RouteHandle, Routes, ServerConfig, SseStream,
+    Error, Handler, Request, Response, Result, RouteHandle, ServerConfig, SseStream,
     WebSocketStream, code, handler,
 };
 
@@ -112,18 +112,21 @@ impl Context {
     // ------------------------------------------------------------- framework
 
     /// The application configuration.
-    pub fn config(&self) -> &Arc<Config> {
+    #[must_use]
+    pub fn config(&self) -> &Config {
         &self.inner.config
+    }
+
+    /// The application configuration, as a shared handle — for moving into a task or a
+    /// long-lived closure.
+    #[must_use]
+    pub fn config_arc(&self) -> Arc<Config> {
+        Arc::clone(&self.inner.config)
     }
 
     /// The server this context registers routes on.
     pub fn server(&self) -> Arc<WebServer> {
         self.inner.server.read().expect("server poisoned").clone()
-    }
-
-    /// The route table of the current server.
-    pub fn handles(&self) -> Arc<Routes> {
-        self.server().handles().clone()
     }
 
     /// A token that is cancelled when the application shuts down.
@@ -297,33 +300,33 @@ impl Context {
     // -------------------------------------------------------------- routing
 
     /// Registers a `GET` route.
-    pub fn get(&self, path: &str, endpoint: HandlerFunc) -> RouteHandle {
-        self.handles().get(path, endpoint)
+    pub fn get(&self, path: &str, endpoint: Handler) -> RouteHandle {
+        self.server().routes().get(path, endpoint)
     }
 
     /// Registers a `POST` route.
-    pub fn post(&self, path: &str, endpoint: HandlerFunc) -> RouteHandle {
-        self.handles().post(path, endpoint)
+    pub fn post(&self, path: &str, endpoint: Handler) -> RouteHandle {
+        self.server().routes().post(path, endpoint)
     }
 
     /// Registers a `PUT` route.
-    pub fn put(&self, path: &str, endpoint: HandlerFunc) -> RouteHandle {
-        self.handles().put(path, endpoint)
+    pub fn put(&self, path: &str, endpoint: Handler) -> RouteHandle {
+        self.server().routes().put(path, endpoint)
     }
 
     /// Registers a `DELETE` route.
-    pub fn delete(&self, path: &str, endpoint: HandlerFunc) -> RouteHandle {
-        self.handles().delete(path, endpoint)
+    pub fn delete(&self, path: &str, endpoint: Handler) -> RouteHandle {
+        self.server().routes().delete(path, endpoint)
     }
 
     /// Registers a `PATCH` route.
-    pub fn patch(&self, path: &str, endpoint: HandlerFunc) -> RouteHandle {
-        self.handles().patch(path, endpoint)
+    pub fn patch(&self, path: &str, endpoint: Handler) -> RouteHandle {
+        self.server().routes().patch(path, endpoint)
     }
 
     /// Registers a route answering every HTTP method.
-    pub fn any(&self, path: &str, endpoint: HandlerFunc) -> RouteHandle {
-        self.handles().any(path, endpoint)
+    pub fn any(&self, path: &str, endpoint: Handler) -> RouteHandle {
+        self.server().routes().any(path, endpoint)
     }
 
     /// Registers a Server-Sent Events endpoint.
@@ -342,7 +345,7 @@ impl Context {
     where
         F: Fn(SseStream) -> crate::web::BoxFuture<Result<()>> + Send + Sync + 'static,
     {
-        self.handles().sse(path, endpoint)
+        self.server().routes().sse(path, endpoint)
     }
 
     /// Registers a WebSocket endpoint.
@@ -350,7 +353,7 @@ impl Context {
     where
         F: Fn(WebSocketStream) -> crate::web::BoxFuture<Result<()>> + Send + Sync + 'static,
     {
-        self.handles().websocket(path, endpoint)
+        self.server().routes().websocket(path, endpoint)
     }
 
     /// Serves a directory of static files.
@@ -359,7 +362,7 @@ impl Context {
         path: &str,
         directory: impl Into<std::path::PathBuf>,
     ) -> RouteHandle {
-        self.handles().static_files(path, directory)
+        self.server().routes().static_files(path, directory)
     }
 
     /// Registers a redirect from one path to another.
@@ -475,7 +478,7 @@ mod tests {
         let route = ctx.post("/b", handler(|_| async { Ok("b") }));
         route.with_meta(MetaOption::value("require_auth", true));
 
-        let routes = ctx.handles().entries();
+        let routes = ctx.server().routes().entries();
         assert_eq!(routes.len(), 2);
         assert!(routes[1].meta().contains_key("require_auth"));
     }

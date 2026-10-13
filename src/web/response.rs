@@ -57,7 +57,7 @@ impl std::fmt::Debug for ResponseBody {
 /// ```no_run
 /// # use rust_web_frame::web::{Response, Result};
 /// fn tag(response: Response) -> Result<Response> {
-///     Ok(response.set_header("x-served-by", "rust-web-frame"))
+///     Ok(response.with_header("x-served-by", "rust-web-frame"))
 /// }
 /// ```
 pub struct Response {
@@ -132,14 +132,18 @@ impl Response {
         self
     }
 
-    /// Adds a header.
-    pub fn set_header(mut self, name: impl AsRef<str>, value: impl AsRef<str>) -> Self {
-        self.try_set_header(name, value);
+    /// Adds a header, consuming the response so calls chain.
+    ///
+    /// Invalid header names or values are ignored; use [`set_header`](Self::set_header)
+    /// when you would rather see the response anyway.
+    #[must_use]
+    pub fn with_header(mut self, name: impl AsRef<str>, value: impl AsRef<str>) -> Self {
+        self.set_header(name, value);
         self
     }
 
-    /// Adds a header, ignoring invalid names or values.
-    pub fn try_set_header(&mut self, name: impl AsRef<str>, value: impl AsRef<str>) {
+    /// Adds a header in place, ignoring invalid names or values.
+    pub fn set_header(&mut self, name: impl AsRef<str>, value: impl AsRef<str>) {
         if let (Ok(name), Ok(value)) = (
             HeaderName::try_from(name.as_ref()),
             HeaderValue::try_from(value.as_ref()),
@@ -278,25 +282,6 @@ macro_rules! into_response_for_numbers {
 
 into_response_for_numbers!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
 
-/// Converts anything serialisable into a response — the escape hatch for handler
-/// payload structs:
-///
-/// ```no_run
-/// # use rust_web_frame::web::{Message, IntoResponse};
-/// # use serde::Serialize;
-/// #[derive(Serialize)]
-/// struct User { id: u64, name: String }
-///
-/// let user = User { id: 1, name: "alice".into() };
-/// let response = Message::data(serde_json::to_value(&user).unwrap()).into_response();
-/// ```
-pub fn json_response<T: serde::Serialize>(value: &T) -> Response {
-    match serde_json::to_value(value) {
-        Ok(value) => Response::json(value),
-        Err(err) => Response::error(Error::from(err)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,7 +298,7 @@ mod tests {
             StatusCode::MOVED_PERMANENTLY
         );
         assert_eq!(
-            Response::message(Message::data_code(1003, json!(null))).status(),
+            Response::message(Message::with_code(1003, json!(null))).status(),
             StatusCode::OK
         );
     }

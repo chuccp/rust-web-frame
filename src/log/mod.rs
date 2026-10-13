@@ -146,11 +146,6 @@ pub fn init_logger(config: LogConfig) -> LogGuard {
     }
 }
 
-/// Initialises the logger and returns the guard, for `let _guard = ...;` call sites.
-pub fn init(config: LogConfig) -> LogGuard {
-    init_logger(config)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

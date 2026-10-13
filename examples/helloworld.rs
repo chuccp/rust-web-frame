@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "/greet/:name",
         handler(|req: wf::web::Request| async move {
             let name = req.param_or("name", "stranger").to_string();
-            Ok(wf::web::Message::with_msg(format!("hello {name}")))
+            Ok(wf::web::Message::with_message(format!("hello {name}")))
         }),
     );
 

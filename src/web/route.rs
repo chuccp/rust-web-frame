@@ -10,7 +10,7 @@ use std::sync::{Arc, RwLock};
 use axum::http::Method;
 use serde_json::Value;
 
-use super::filter::HandlerFunc;
+use super::filter::Handler;
 use crate::web::BoxFuture;
 
 /// Key/value metadata attached to a route, readable per request through
@@ -195,7 +195,7 @@ pub enum RouteKind {
 pub struct Route {
     path: String,
     methods: Vec<Method>,
-    handler: HandlerFunc,
+    handler: Handler,
     meta: Arc<HandlerMeta>,
     kind: RouteKind,
 }
@@ -212,7 +212,7 @@ impl std::fmt::Debug for Route {
 }
 
 impl Route {
-    pub(crate) fn new(path: impl Into<String>, methods: Vec<Method>, handler: HandlerFunc) -> Self {
+    pub(crate) fn new(path: impl Into<String>, methods: Vec<Method>, handler: Handler) -> Self {
         Self {
             path: path.into(),
             methods,
@@ -241,13 +241,18 @@ impl Route {
 
     /// The endpoint handler.
     #[must_use]
-    pub fn handler(&self) -> &HandlerFunc {
+    pub fn handler(&self) -> &Handler {
         &self.handler
     }
 
     /// The route's metadata store.
     #[must_use]
-    pub fn meta(&self) -> &Arc<HandlerMeta> {
+    pub fn meta(&self) -> &HandlerMeta {
+        &self.meta
+    }
+
+    /// The metadata as a shared handle, for the request that has to outlive the borrow.
+    pub(crate) fn shared_meta(&self) -> &Arc<HandlerMeta> {
         &self.meta
     }
 
@@ -316,7 +321,7 @@ impl RouteHandle {
 
     /// The route's metadata store.
     #[must_use]
-    pub fn meta(&self) -> &Arc<HandlerMeta> {
+    pub fn meta(&self) -> &HandlerMeta {
         &self.0.meta
     }
 
@@ -343,7 +348,7 @@ impl RouteHandle {
         let preprocess = Arc::new(preprocess);
         let inner = self.0;
         let handler = inner.handler.clone();
-        let wrapped: HandlerFunc = Arc::new(move |req| {
+        let wrapped: Handler = Arc::new(move |req| {
             let preprocess = preprocess.clone();
             let handler = handler.clone();
             Box::pin(async move {
@@ -373,7 +378,7 @@ impl std::ops::Deref for RouteHandle {
 /// * `/static/*filepath` → `/static/{*filepath}`
 /// * `/users/{id}` is passed through unchanged, so either style may be written.
 #[must_use]
-pub fn to_axum_path(path: &str) -> String {
+pub(crate) fn to_axum_path(path: &str) -> String {
     let mut out = String::with_capacity(path.len() + 4);
     for segment in path.split('/').filter(|segment| !segment.is_empty()) {
         out.push('/');

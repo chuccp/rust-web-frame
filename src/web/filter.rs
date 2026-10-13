@@ -17,9 +17,9 @@ pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 /// The framework's endpoint signature: takes the request, returns a response or an error.
 ///
 /// Build these with [`handler`]; you never construct one by hand.
-pub type HandlerFunc = Arc<dyn Fn(Request) -> BoxFuture<Result<Response>> + Send + Sync>;
+pub type Handler = Arc<dyn Fn(Request) -> BoxFuture<Result<Response>> + Send + Sync>;
 
-/// Wraps an async function or closure into a [`HandlerFunc`].
+/// Wraps an async function or closure into a [`Handler`].
 ///
 /// ```no_run
 /// # use rust_web_frame::web::{handler, Request, Response, Message};
@@ -46,7 +46,7 @@ pub type HandlerFunc = Arc<dyn Fn(Request) -> BoxFuture<Result<Response>> + Send
 /// }
 /// let h = handler(index);
 /// ```
-pub fn handler<F, Fut, T>(f: F) -> HandlerFunc
+pub fn handler<F, Fut, T>(f: F) -> Handler
 where
     F: Fn(Request) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<T, Error>> + Send + 'static,
@@ -147,11 +147,11 @@ where
 pub struct FilterChain {
     index: isize,
     filters: Arc<Vec<Arc<dyn Filter>>>,
-    handler: HandlerFunc,
+    handler: Handler,
 }
 
 impl FilterChain {
-    pub(crate) fn new(filters: Arc<Vec<Arc<dyn Filter>>>, handler: HandlerFunc) -> Self {
+    pub(crate) fn new(filters: Arc<Vec<Arc<dyn Filter>>>, handler: Handler) -> Self {
         Self {
             index: -1,
             filters,
@@ -169,7 +169,7 @@ impl FilterChain {
     /// # #[async_trait::async_trait]
     /// # impl Filter for Timing {
     /// # async fn handle(&self, chain: &mut FilterChain, req: Request) -> Result<Response> {
-    /// let response = chain.next(req).await?.set_header("x-served-by", "rust-web-frame");
+    /// let response = chain.next(req).await?.with_header("x-served-by", "rust-web-frame");
     /// Ok(response)
     /// # }
     /// # }
@@ -195,7 +195,7 @@ impl FilterChain {
 }
 
 /// Every HTTP method the framework is willing to route.
-pub fn all_methods() -> Vec<Method> {
+pub(crate) fn all_methods() -> Vec<Method> {
     vec![
         Method::GET,
         Method::POST,
@@ -209,8 +209,8 @@ pub fn all_methods() -> Vec<Method> {
     ]
 }
 
-/// The methods used by WebSocket and SSE endpoints.
-pub fn standard_methods() -> Vec<Method> {
+/// The methods WebSocket and SSE endpoints answer on.
+pub(crate) fn standard_methods() -> Vec<Method> {
     vec![Method::GET, Method::POST, Method::PUT, Method::DELETE]
 }
 

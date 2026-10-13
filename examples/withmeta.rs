@@ -120,7 +120,7 @@ impl ApiController {
     }
 
     async fn delete_user(_req: Request) -> Result<Message> {
-        Ok(Message::with_msg("deleted"))
+        Ok(Message::with_message("deleted"))
     }
 
     /// The counter filter below registers itself as a service, so a handler can read it
