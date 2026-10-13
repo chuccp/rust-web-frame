@@ -202,7 +202,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## 快速开始
 
 ```bash
-cargo add --git https://github.com/chuccp/rust-web-frame   # 尚未发布到 crates.io
+cargo add rust-web-frame          # 从 crates.io 安装，默认 `sqlite`，换驱动用 `--features postgres`
+
+git clone https://github.com/chuccp/rust-web-frame   # 下面这些示例需要 clone 下来
+cd rust-web-frame
 cargo run --example helloworld    # http://localhost:19009/
 cargo run --example rest          # controller + service + 后台任务
 cargo run --example model         # 实体、查询、事务（内存 SQLite）
@@ -509,7 +512,7 @@ builder.rest_group(admin);
 ## 开发
 
 ```bash
-cargo test                      # 292 个测试：单元、集成、文档
+cargo test                      # 417 个测试：单元、集成、文档
 cargo clippy --all-targets      # 无警告
 cargo fmt
 cargo run --example rest        # 跑示例

@@ -211,7 +211,9 @@ role (a filter that a handler reads back) registers **once** and is found by its
 ## Quick start
 
 ```bash
-git clone https://github.com/chuccp/rust-web-frame   # not yet on crates.io
+cargo add rust-web-frame          # from crates.io — `sqlite` by default, `--features postgres` for another driver
+
+git clone https://github.com/chuccp/rust-web-frame   # for the examples below
 cd rust-web-frame
 cargo run --example helloworld    # http://localhost:19009/
 cargo run --example rest          # a controller + service + background runner
@@ -537,7 +539,7 @@ builder.rest_group(admin);
 ## Development
 
 ```bash
-cargo test                      # 292 tests: unit, integration and doc
+cargo test                      # 417 tests: unit, integration and doc
 cargo clippy --all-targets      # no warnings
 cargo fmt
 cargo run --example rest        # run an example
