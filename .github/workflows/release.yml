@@ -188,3 +188,11 @@ jobs:
       - name: Publish to crates.io
         if: env.CARGO_REGISTRY_TOKEN != ''
         run: cargo publish --locked
+
+      # `cargo publish` verifies the crate by building a copy of it under `target/package`,
+      # and the cache action's post-job cleanup walks that copy on its way out, reporting
+      # ENOENT for directories it has already removed — noise on every release, in a phase
+      # whose exit code nobody reads. Nothing after this step needs the copy.
+      - name: Clean up the packaged copy
+        if: always()
+        run: rm -rf target/package
