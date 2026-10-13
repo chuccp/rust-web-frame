@@ -56,8 +56,12 @@ jobs:
         run: cargo fmt --check
 
       # The tag names the release, so it may not name one that is already behind us, and it
-      # may not go backwards. A re-run of a release whose bump has already landed finds the
-      # two equal, and carries on to the publish rather than failing.
+      # may not go backwards.
+      #
+      # The version it is compared against is `main`'s, not the one in the tree this job
+      # checked out. The tag points at the commit *before* the bump — that is the design —
+      # so a re-run always starts from a manifest that is behind, and comparing against it
+      # would have every re-run try to land the same commit twice.
       #
       # The comparison is semver's, not `sort -V`'s: version sort puts `0.2.0-beta` above
       # `0.2.0`, which is the wrong way round, and would let a tag walk the manifest
@@ -71,8 +75,11 @@ jobs:
             exit 1
           fi
 
-          current="$(cargo metadata --no-deps --format-version 1 \
-            | python3 -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+          git fetch --quiet origin main
+          current="$(git show FETCH_HEAD:Cargo.toml | python3 -c "
+          import re, sys
+          print(re.search(r'(?m)^version = \"([^\"]+)\"', sys.stdin.read()).group(1))
+          ")"
 
           # `python3 -c` with the code on its own lines: the shell keeps the quoting, and
           # the block scalar above has already taken the indentation off.
@@ -96,28 +103,31 @@ jobs:
                 else 'refused')
           " "$current" "$tag")"
 
-          echo "Cargo.toml says $current, the tag says $tag: $verdict"
+          echo "main says $current, the tag says $tag: $verdict"
           if [ "$verdict" = "refused" ]; then
-            echo "::error::$GITHUB_REF_NAME is older than the $current in Cargo.toml"
+            echo "::error::$GITHUB_REF_NAME is older than the $current on main"
             exit 1
           fi
 
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "bump=$([ "$verdict" = "bump" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          # Whether `main` still needs the bump commit. The manifest is written either way:
+          # a re-run publishes from the same tree the first attempt did, and that tree is
+          # the tag's, which never carries the bump.
+          echo "commit=$([ "$verdict" = "bump" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
       - name: Write the version into Cargo.toml
-        if: steps.version.outputs.bump == 'true'
         run: |
           tag="${{ steps.version.outputs.tag }}"
           # The address takes the rewrite to the *first* `version = "..."` in the file, so a
           # `[dependencies.x]` table with a `version` of its own stays out of it.
           sed -i -E "0,/^version = \"[^\"]*\"/s//version = \"$tag\"/" Cargo.toml
 
-          # One line, and only one: a manifest that lost a dependency's version to this
-          # rewrite is still valid TOML, and nothing later in the job would notice.
+          # One line, or none when the tree already carries this version: a manifest that
+          # lost a *dependency's* version to this rewrite is still valid TOML, and nothing
+          # later in the job would notice.
           changed="$(git diff --numstat -- Cargo.toml | awk '{print $1" "$2}')"
-          if [ "$changed" != "1 1" ]; then
-            echo "::error::the rewrite touched $changed lines of Cargo.toml, expected 1 1"
+          if [ -n "$changed" ] && [ "$changed" != "1 1" ]; then
+            echo "::error::the rewrite touched $changed lines of Cargo.toml, expected none or 1 1"
             git diff -- Cargo.toml
             exit 1
           fi
@@ -134,7 +144,7 @@ jobs:
           git diff --stat
 
       - name: Commit the version
-        if: steps.version.outputs.bump == 'true'
+        if: steps.version.outputs.commit == 'true'
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
