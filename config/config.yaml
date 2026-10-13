@@ -1,0 +1,62 @@
+# Sample configuration.
+#
+# `load_auto_config()` searches, in order of increasing precedence:
+#   /etc/<app>/config.{json,yaml,yml,toml}
+#   ~/.<app>/config.{json,yaml,yml,toml}
+#   ./config/config.{json,yaml,yml,toml}
+#   ./config.{json,yaml,yml,toml}
+#
+# Every section is optional: an application with no config file starts on the framework
+# defaults (port 19009, no database, `info` logging).
+
+web:
+  server:
+    port: 19009
+    # Prefixed to every route, so a handler registered at `/users` is served at
+    # `/api/users`.
+    # contextPath: /api
+    # Static files served when no route matches.
+    # locations: ["./public"]
+    # Served to browsers for unmatched navigations, so a single-page app keeps its deep
+    # links.
+    # page404: index.html
+    # `0` means the 10 MiB default, `-1` means unlimited.
+    maxBodySize: 0
+
+  # Extra servers, each with its own controllers and port. The port here overrides
+  # whatever the code asked for, so a deployment can move a group without a rebuild.
+  # restGroups:
+  #   admin:
+  #     port: 19011
+  #     contextPath: /admin
+
+# The `db` section is read by `db::connect_from_config`. Leave it out to run without a
+# database — `Context::db()` then reports a helpful error instead of failing at startup.
+#
+# SQLite:
+# db:
+#   type: sqlite
+#   path: ./data.db
+#
+# MySQL:
+# db:
+#   type: mysql
+#   host: localhost
+#   port: 3306
+#   user: root
+#   password: secret
+#   database: mydb
+#   maxConnections: 20
+#
+# Anything else sea-orm can reach — ClickHouse, SQL Server — goes through a raw url:
+# db:
+#   type: clickhouse
+#   url: clickhouse://user:pass@localhost:9000/default
+
+log:
+  # A `tracing` filter directive: `info`, `debug`, `my_app=debug,tower=warn`.
+  level: info
+  format: text
+  ansi: true
+  # Also append to a rotating file. The directory is created if it is missing.
+  # path: ./logs/app.log
