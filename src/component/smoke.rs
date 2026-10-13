@@ -40,11 +40,18 @@ async fn get(router: &axum::Router, path: &str) -> serde_json::Value {
 #[tokio::test]
 async fn a_handler_can_reach_every_component() {
     let cache = cache().await;
+    let root = tempfile::tempdir().unwrap();
 
     let mut builder = Builder::new(Config::empty());
     builder.service(cache);
     builder.service(Validator::default());
     builder.service(RateLimit::default());
+    builder.service(Captcha::default());
+    builder.service(Proxy::default());
+    builder.service(LocalCache::new(LocalCacheConfig {
+        path: root.path().to_path_buf(),
+        namespace: String::new(),
+    }));
     builder.get(
         "/check",
         handler(|req: Request| async move {
@@ -57,10 +64,26 @@ async fn a_handler_can_reach_every_component() {
             let limiter = req.context().service::<RateLimit>()?;
             let quota = limiter.check("test", None);
 
+            let captcha = req.context().service::<Captcha>()?;
+            let challenge = captcha.challenge()?;
+            // Nonsense is refused, and a challenge is spent by being answered at all.
+            let refused = captcha.validate(&challenge.id, "not the answer").is_err();
+            let spent = captcha.validate(&challenge.id, "7").is_err();
+
+            let proxy = req.context().service::<Proxy>()?;
+            let forwardable = proxy.forward("/behind", "http://127.0.0.1:19099").is_ok();
+
+            let local = req.context().service::<LocalCache>()?;
+
             Ok(Message::data(serde_json::json!({
                 "cached": cache.get("seen").await.is_some(),
                 "weakPasswordRefused": weak.is_err(),
                 "firstRequestAllowed": quota.allowed,
+                "questionAsked": !challenge.question.is_empty() && !challenge.id.is_empty(),
+                "nonsenseRefused": refused,
+                "challengeSpent": spent,
+                "forwardable": forwardable,
+                "cacheRooted": local.path().is_dir(),
             })))
         }),
     );
@@ -72,9 +95,18 @@ async fn a_handler_can_reach_every_component() {
         .expect("the application initialises");
 
     let json = get(&router, "/check").await;
-    assert_eq!(json["data"]["cached"], true, "{json}");
-    assert_eq!(json["data"]["weakPasswordRefused"], true, "{json}");
-    assert_eq!(json["data"]["firstRequestAllowed"], true, "{json}");
+    for field in [
+        "cached",
+        "weakPasswordRefused",
+        "firstRequestAllowed",
+        "questionAsked",
+        "nonsenseRefused",
+        "challengeSpent",
+        "forwardable",
+        "cacheRooted",
+    ] {
+        assert_eq!(json["data"][field], true, "{field}: {json}");
+    }
 }
 
 #[tokio::test]

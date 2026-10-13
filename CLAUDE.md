@@ -98,7 +98,7 @@ one method to override:
 `Arc<dyn Filter>` / `Arc<dyn Converter>` / `Arc<dyn Runner>`), and the `TypeId` the
 component is looked up by.
 
-Two invariants that are easy to break:
+Three invariants that are easy to break:
 
 * **`init` must take `&self`, not `&mut self`.** Shared receivers are what let one
   instance be an `Arc` from the start, serve as a service *and* as a filter, and be
@@ -107,6 +107,12 @@ Two invariants that are easy to break:
 * **The registration key must be the user's type**, never an adapter's. Registering a
   filter as `AsFilter<Counter>` would make `ctx.service::<Counter>()` fail; there are
   regression tests for exactly this in `core/service.rs` and `tests/web_layer.rs`.
+* **A component configures itself in place.** `init_all` registers the instance the caller
+  built, and refuses a type it already holds, so an `init` that registered *another* copy
+  of its own type fails at startup with "registered twice". Settings read from the config
+  therefore go behind a lock or a `OnceLock` — `RateLimit`, `Captcha` and `Proxy` do that —
+  or the caller builds the component from the config, as `CacheService::from_config` and
+  `LocalCache::from_config` do.
 
 A component is only visible to components registered *after* it. Document that; do not
 try to make lookups order-independent.
@@ -287,12 +293,16 @@ These are enforced, not aspirational:
 * Comments explain *why*, and only where the reason is not obvious from the code. Match
   the surrounding density; do not narrate.
 
-## Deliberate non-goals (this iteration)
+## Deliberate non-goals
 
-Captcha, QR codes, mail, image helpers, reverse proxy, the TLS listener, and the
-`component/` crates of the Go original (`cache`, `ratelimit`, `cors`, `validator`,
-`schedule`, `auth`). The extension points for them — `Filter`, `Service`, `Converter` —
-are in place and exercised.
+The Go original's `util` image helpers, and `cors` as a component — CORS is a property of
+the listener here (`web.server.cors`, applied outside the router and therefore covering the
+fallback too), not of a route, and a component would only move it back inside.
+
+The rest of the Go original's `component/` is ported: `auth`, `cache`, `captcha`,
+`localcache`, `mail`, `proxy`, `qrcode`, `ratelimit`, `schedule`, `validator`. Keep them
+ordinary: each is a `Service` or a `Filter` on the extension points the framework already
+has, and nothing in `src/component/` may need a change to the framework to work.
 
 ## Known gaps
 
@@ -306,3 +316,6 @@ are in place and exercised.
 * Shutdown waits a bounded grace for runners (5 s) and in-flight connections (30 s), then
   abandons them. A runner that ignores its cancellation token has its work stopped at an
   arbitrary point.
+* The reverse proxy forwards a request body the framework has already read, and does not
+  tunnel WebSocket upgrades — the server gives an upgrade to the handler that asked for it.
+  Its `https` upstreams are trusted through `webpki`'s roots, not the operating system's.

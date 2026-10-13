@@ -30,7 +30,9 @@ pub mod schedule;
 pub mod validator;
 
 pub use cache::{Backend, Cache, CacheConfig, CacheExt, CacheService, MemoryCache, RedisCache};
+pub use captcha::{Captcha, CaptchaConfig, Challenge};
 pub use localcache::{LocalCache, LocalCacheConfig};
+pub use proxy::{Proxy, ProxyConfig};
 pub use ratelimit::{
     Quota, RATE_LIMIT_CONFIG_KEY, RATE_LIMITED_KEY, RateLimit, RateLimitConfig, rate_limit_exempt,
     rate_limited,

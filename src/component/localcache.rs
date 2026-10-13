@@ -25,13 +25,13 @@
 //! one of them can serve a truncated result.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
+use crate::config::Config;
 use crate::core::{Context, Service};
 use crate::web::{Error, FileResponse, Result};
 
@@ -87,6 +87,24 @@ impl LocalCache {
             config,
             generating: Mutex::new(()),
         }
+    }
+
+    /// A cache rooted where the `local_cache` section says.
+    ///
+    /// Registering a component is what puts it in the container, so this is how a cache is
+    /// built in an application that configures one:
+    ///
+    /// ```no_run
+    /// # use rust_web_frame::Builder;
+    /// # use rust_web_frame::component::LocalCache;
+    /// # use rust_web_frame::config::Config;
+    /// let config = Config::empty();
+    /// let mut builder = Builder::new(config.clone());
+    /// builder.service(LocalCache::from_config(&config));
+    /// ```
+    #[must_use]
+    pub fn from_config(config: &Config) -> Self {
+        Self::new(config.section(LOCAL_CACHE_CONFIG_KEY).unwrap_or_default())
     }
 
     /// The configured root.
@@ -276,24 +294,41 @@ impl LocalCache {
 
 #[async_trait]
 impl Service for LocalCache {
+    /// Creates the cache directory.
+    ///
+    /// The settings came from whoever built the cache — [`LocalCache::from_config`] reads
+    /// the `local_cache` section — because the registered component is the one the
+    /// container keeps: an `init` that built its own configured copy and registered *that*
+    /// would leave `ctx.service::<LocalCache>()` pointing at one cache while the paths a
+    /// handler got from it belonged to another.
+    ///
+    /// A section that disagrees with the registered settings is reported rather than
+    /// obeyed, so `LocalCache::default()` behind a configured `local_cache` section is
+    /// visible in the log instead of silently ignoring it.
     async fn init(&self, ctx: &Context) -> Result<()> {
-        let config: LocalCacheConfig = ctx
+        if let Ok(section) = ctx
             .config()
-            .section(LOCAL_CACHE_CONFIG_KEY)
-            .unwrap_or_default();
+            .section::<LocalCacheConfig>(LOCAL_CACHE_CONFIG_KEY)
+            && section.path != self.config.path
+        {
+            tracing::warn!(
+                registered = %self.config.path.display(),
+                configured = %section.path.display(),
+                "the `local_cache` section is ignored: register the cache with \
+                 `LocalCache::from_config(&config)`"
+            );
+        }
 
-        let store = Arc::new(Self::new(config));
-        tokio::fs::create_dir_all(store.path())
+        tokio::fs::create_dir_all(self.path())
             .await
             .map_err(|err| {
                 Error::with_source(500, err).detail(format!(
                     "cannot create the cache directory {}",
-                    store.path().display()
+                    self.path().display()
                 ))
             })?;
 
-        tracing::debug!(path = %store.path().display(), "local cache ready");
-        ctx.register(store);
+        tracing::debug!(path = %self.path().display(), "local cache ready");
         Ok(())
     }
 }
@@ -332,6 +367,8 @@ fn sanitise(value: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     fn cache(dir: &Path) -> LocalCache {
@@ -501,7 +538,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_service_registers_a_cache_ready_to_use() {
+    async fn the_directory_is_created_at_startup() {
         let dir = tempfile::tempdir().unwrap();
         let ctx = Context::empty();
         let service = LocalCache::new(LocalCacheConfig {
@@ -511,7 +548,9 @@ mod tests {
 
         service.init(&ctx).await.unwrap();
 
-        let cache = ctx.service::<LocalCache>().expect("registered");
-        assert!(cache.path().is_dir(), "the directory is created at startup");
+        assert!(
+            service.path().is_dir(),
+            "the directory is created at startup"
+        );
     }
 }

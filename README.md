@@ -556,9 +556,15 @@ The design is the same; the language forces a few honest changes.
 | `autocert` for Let's Encrypt | the same, but the resolver order is fixed | The Go wildcard matcher ended in `generateSelfSigned`, so it never returned nil and the `autocert` call below it was unreachable — no certificate was ever ordered, and every unknown name got a self-signed one. The order here is exact match → wildcard → **ACME** → first certificate → self-signed. |
 | ACME over HTTP-01 on a second port | ACME over TLS-ALPN-01 on the one port | No second listener, and no argument over who owns port 80. |
 
-Not implemented in this iteration: captcha, QR codes, mail, reverse proxy, and the
-component crates (`component/cache`, `component/ratelimit`, …). The extension points for
-them — `Filter`, `Service`, `Converter` — are all in place.
+Everything in the Go original's `component/` has a counterpart under `src/component/`:
+`cache`, `ratelimit`, `validator`, `mail`, `auth`, `localcache`, `qrcode`, `captcha`,
+`schedule` and `proxy`. Each is an ordinary `Filter` or `Service` on the same three
+extension points — `Filter`, `Service`, `Converter` — which is the only thing that makes
+them work; nothing in the component model is privileged.
+
+Two things are deliberately not ported: the `util` package's image helpers, and `cors` as a
+component. CORS here is a property of the listener (`web.server.cors`), applied outside the
+router so it also covers the fallback, rather than of a route.
 
 ---
 
