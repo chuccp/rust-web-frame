@@ -11,6 +11,15 @@ service、controller、filter、后台 runner 装到一起，一个以类型为�
 
 ---
 
+## 安装
+
+```bash
+cargo add rust-web-frame                      # 来自 crates.io，默认 `sqlite` 驱动
+cargo add rust-web-frame --features postgres  # 或 `--features mysql`
+```
+
+---
+
 ## 三个核心想法
 
 ### 1. 声明式路由
@@ -202,8 +211,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## 快速开始
 
 ```bash
-cargo add rust-web-frame          # 从 crates.io 安装，默认 `sqlite`，换驱动用 `--features postgres`
-
 git clone https://github.com/chuccp/rust-web-frame   # 下面这些示例需要 clone 下来
 cd rust-web-frame
 cargo run --example helloworld    # http://localhost:19009/

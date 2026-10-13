@@ -12,6 +12,15 @@ rather than reaching for a global.
 
 ---
 
+## Installation
+
+```bash
+cargo add rust-web-frame                      # from crates.io — `sqlite`, the default driver
+cargo add rust-web-frame --features postgres  # or --features mysql
+```
+
+---
+
 ## The three ideas
 
 ### 1. Declarative routing
@@ -211,8 +220,6 @@ role (a filter that a handler reads back) registers **once** and is found by its
 ## Quick start
 
 ```bash
-cargo add rust-web-frame          # from crates.io — `sqlite` by default, `--features postgres` for another driver
-
 git clone https://github.com/chuccp/rust-web-frame   # for the examples below
 cd rust-web-frame
 cargo run --example helloworld    # http://localhost:19009/
