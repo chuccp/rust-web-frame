@@ -70,6 +70,7 @@ struct Inner {
     multipart: OnceCell<MultipartForm>,
     attrs: Mutex<HashMap<String, Arc<dyn Any + Send + Sync>>>,
     cookies_to_set: Mutex<Vec<SetCookie>>,
+    response_headers: Mutex<Vec<(String, String)>>,
 }
 
 impl std::fmt::Debug for Request {
@@ -142,6 +143,7 @@ impl Request {
                 multipart: OnceCell::new(),
                 attrs: Mutex::new(HashMap::new()),
                 cookies_to_set: Mutex::new(Vec::new()),
+                response_headers: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -715,6 +717,39 @@ impl Request {
 
     pub(crate) fn take_cookies_to_set(&self) -> Vec<SetCookie> {
         std::mem::take(&mut *self.inner.cookies_to_set.lock().expect("cookies poisoned"))
+    }
+
+    /// Queues a response header, applied by the converter to **every** response.
+    ///
+    /// [`Response::set_header`](super::Response::set_header) only reaches the response a
+    /// filter is holding — a handler that returns `Err` never gives it one. This is for the
+    /// headers that have to survive that, `X-Request-Id` being the usual one:
+    ///
+    /// ```no_run
+    /// # use rust_web_frame::web::{Filter, FilterChain, Request, Response, Result};
+    /// # struct Traced;
+    /// # #[async_trait::async_trait]
+    /// # impl Filter for Traced {
+    /// # async fn handle(&self, chain: &mut FilterChain, req: Request) -> Result<Response> {
+    /// req.set_response_header("x-request-id", "3f2a…");
+    /// chain.next(req).await
+    /// # }
+    /// # }
+    /// ```
+    pub fn set_response_header(&self, name: impl Into<String>, value: impl Into<String>) {
+        self.inner
+            .response_headers
+            .lock()
+            .expect("response headers poisoned")
+            .push((name.into(), value.into()));
+    }
+
+    pub(crate) fn response_headers(&self) -> Vec<(String, String)> {
+        self.inner
+            .response_headers
+            .lock()
+            .expect("response headers poisoned")
+            .clone()
     }
 
     // ---------------------------------------------------------- extensions

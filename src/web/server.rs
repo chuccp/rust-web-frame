@@ -177,6 +177,9 @@ impl Server {
         let converter = self.converter();
 
         let mut by_path: HashMap<String, MethodRouter> = HashMap::new();
+        // Several routes share one path (`GET /users` and `POST /users`), and the `Allow`
+        // header on a 405 has to list all of them — not just whichever was registered last.
+        let mut methods_by_path: HashMap<String, Vec<Method>> = HashMap::new();
 
         for route in self.handles.entries() {
             let path = to_axum_path(&join_context_path(&self.config.context_path, route.path()));
@@ -194,7 +197,16 @@ impl Server {
                     move |req: AxumRequest| dispatch(dispatcher.clone(), req)
                 });
             }
-            let allowed = allowed_header(route.methods());
+            methods_by_path
+                .entry(path)
+                .or_default()
+                .extend(route.methods().iter().cloned());
+        }
+
+        // The fallback goes on once per path, with every method the path answers.
+        for (path, entry) in by_path.iter_mut() {
+            let allowed =
+                allowed_header(methods_by_path.get(path).map(Vec::as_slice).unwrap_or(&[]));
             *entry = std::mem::take(entry).fallback(move || {
                 let allowed = allowed.clone();
                 async move { method_not_allowed(allowed) }

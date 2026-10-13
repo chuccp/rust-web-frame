@@ -59,7 +59,12 @@ impl Converter for DefaultConverter {
             }
         };
 
-        // Cookies queued by the handler travel on every kind of response.
+        // Cookies and headers queued by the handler or a filter travel on every kind of
+        // response — including the error envelope, which is the point of queueing them
+        // rather than setting them on a `Response` the error path never produces.
+        for (name, value) in req.response_headers() {
+            response.set_header(name, value);
+        }
         let cookies = req.take_cookies_to_set();
         for cookie in cookies {
             response.set_header("set-cookie", cookie.to_header_value());
