@@ -1,0 +1,85 @@
+name: CI
+
+# The checks go-web-frame's CI runs, in Rust: where Go has `go vet`, this has rustfmt,
+# clippy and rustdoc; where it has `go test`, this has `cargo test`; where it has a
+# coverage summary, this has `cargo llvm-cov`. The benchmarks the Go workflow runs have no
+# counterpart yet, because nothing here is benchmarked.
+#
+# Unlike the release workflow this runs on every push to `main` and every pull request, so
+# it is allowed to be slow — but the coverage job runs *beside* the test job rather than
+# after it, because a check that takes twice as long is a check that gets ignored.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache the build
+        uses: Swatinem/rust-cache@v2
+
+      # The first two are the conventions CLAUDE.md calls enforced rather than aspirational.
+      - name: Check the formatting
+        run: cargo fmt --check
+
+      - name: Run clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      # `cargo test` compiles the doc examples, but it does not fail over a broken doc link
+      # or a missing item; this does, and every public item here is documented.
+      - name: Build the documentation
+        run: cargo doc --locked --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+      # No `--all-targets`: that flag skips the doc tests, which are seventy of this
+      # crate's four hundred, and every public item here has an example.
+      - name: Run tests
+        run: cargo test --locked
+
+      # The drivers are features, so a change can break MySQL or PostgreSQL while the
+      # default build — SQLite — stays green.
+      - name: Check the other drivers compile
+        run: |
+          cargo check --locked --all-targets --features mysql
+          cargo check --locked --all-targets --features postgres
+
+  coverage:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Cache the build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      # The suite the test job runs, instrumented, ending in the summary the Go workflow
+      # prints at the end of its coverage step.
+      - name: Measure the coverage
+        run: cargo llvm-cov --summary-only
