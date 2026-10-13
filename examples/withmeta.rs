@@ -9,6 +9,11 @@
 //! curl -H "authorization: alice"  http://localhost:19009/api/admin/users  # 403
 //! curl -H "authorization: root"   http://localhost:19009/api/admin/users  # ok
 //! ```
+//!
+//! The `/api/admin` routes are also **guarded** — see `require_meta` in the controller's
+//! `init`. It changes nothing while every route complies, which is the point: it is what
+//! makes the *next* admin route safe, because one registered without `require_auth()`
+//! refuses to start instead of serving unprotected.
 
 use async_trait::async_trait;
 use rust_web_frame as wf;
@@ -141,6 +146,16 @@ impl Rest for ApiController {
         // Any authenticated caller.
         ctx.get("/api/profile", handler(Self::profile))
             .with_meta(require_auth());
+
+        // Everything under `/api/admin` must carry `require_auth()`. Both routes below do,
+        // so this changes nothing today — it is what makes a third one safe: register it
+        // without `.with_meta(require_auth())` and the application refuses to start,
+        // naming the route, instead of serving it unprotected.
+        //
+        // A guard is the requirement the whole prefix shares. The permissions are not:
+        // they differ per route, and a guard that demanded one of them would refuse the
+        // other.
+        ctx.require_meta("/api/admin", require_auth());
 
         // Authenticated *and* permitted. Options chain, and are evaluated independently.
         ctx.post("/api/admin/users", handler(Self::create_user))
