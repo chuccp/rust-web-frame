@@ -144,10 +144,18 @@ jobs:
 
       # `--notes-from-tag` rather than the Go workflow's generated notes: the tags in this
       # repository carry their own release notes, which is what v0.1.0's release shows.
+      #
+      # A release that is already there is not an error: re-running this job is how a
+      # publish that was skipped — no token yet — gets done later.
       - name: Create the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes-from-tag
+        run: |
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            echo "the $GITHUB_REF_NAME release already exists"
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes-from-tag
+          fi
 
       # The Rust counterpart of the Go workflow's module-proxy warm-up. A Go tag makes the
       # module fetchable on its own; a crate has to be uploaded, so this is the step that
