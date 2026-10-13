@@ -1,0 +1,72 @@
+name: Release
+
+# Same shape as go-web-frame's release workflow: a version tag runs the checks, publishes
+# the release, and then makes the library available to the people who consume it.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # Read once here so the publish step can tell "no token configured" from "token
+    # configured" in its `if`, which cannot look at `secrets` directly.
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache the build
+        uses: Swatinem/rust-cache@v2
+
+      # A Go tag *is* the version, so the Go workflow has nothing to compare it against.
+      # A crate carries its own, and a tag that disagrees publishes something nobody can
+      # find under the version they asked for.
+      - name: Check the tag names the version in Cargo.toml
+        run: |
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::the tag $GITHUB_REF_NAME does not match Cargo.toml's $version"
+            exit 1
+          fi
+
+      - name: Run tests
+        run: cargo test --locked --all-targets
+
+      - name: Run clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Check the formatting
+        run: cargo fmt --check
+
+      # `--notes-from-tag` rather than the Go workflow's generated notes: the tags in this
+      # repository carry their own release notes, which is what v0.1.0's release shows.
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes-from-tag
+
+      # The Rust counterpart of the Go workflow's module-proxy warm-up. A Go tag makes the
+      # module fetchable on its own; a crate has to be uploaded, so this is the step that
+      # makes the release real for consumers — and the only one that cannot be undone
+      # (a published version can be yanked, never replaced). It is skipped until the secret
+      # exists, so the workflow is usable before the crate is on crates.io.
+      - name: Check the crate packages
+        run: cargo publish --locked --dry-run
+
+      - name: Publish to crates.io
+        if: env.CARGO_REGISTRY_TOKEN != ''
+        run: cargo publish --locked
