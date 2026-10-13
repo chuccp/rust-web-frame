@@ -457,8 +457,7 @@ impl Request {
 
     /// Writes an uploaded file to `destination`, creating parent directories as needed.
     ///
-    /// Returns how many bytes were written. This is the Go original's
-    /// `SaveUploadedFile`.
+    /// Returns how many bytes were written.
     ///
     /// # Errors
     ///
@@ -482,7 +481,7 @@ impl Request {
 
     /// The body parsed as JSON. Parsed once and cached.
     ///
-    /// Like the Go original, `GET` requests are not allowed to carry JSON.
+    /// `GET` requests are not allowed to carry JSON, whatever their content type.
     pub fn json(&self) -> Result<Value> {
         if self.is_get() {
             return Err(
@@ -881,7 +880,7 @@ fn value_to_i64(value: &Value) -> i64 {
 }
 
 /// Parses `a=1&b=2` into a map, percent-decoding keys and values. The first occurrence
-/// of a repeated key wins, matching `gin.Context.Query`.
+/// of a repeated key wins.
 pub(crate) fn parse_pairs(input: &str) -> HashMap<String, String> {
     let mut out = HashMap::new();
     for pair in input.split('&') {
@@ -893,7 +892,7 @@ pub(crate) fn parse_pairs(input: &str) -> HashMap<String, String> {
             None => (pair, ""),
         };
         let key = percent_decode(key);
-        // The first occurrence of a repeated key wins, as it does in the Go original.
+        // The first occurrence of a repeated key wins.
         out.entry(key).or_insert_with(|| percent_decode(value));
     }
     out

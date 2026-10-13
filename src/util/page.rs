@@ -87,7 +87,7 @@ impl Page {
 pub struct Paged<T> {
     /// Total number of rows matching the query, ignoring pagination.
     pub total: i64,
-    /// The rows on this page. Serialised as `list`, matching the Go original's clients.
+    /// The rows on this page. Serialised as `list`.
     #[serde(rename = "list")]
     pub items: Vec<T>,
 }

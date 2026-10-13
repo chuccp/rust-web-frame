@@ -117,9 +117,9 @@ impl Identity {
 
 /// Where the filter gets an identity from.
 ///
-/// The Go original leaves this entirely to the application. Providing a trait and a working
-/// implementation means the common case — a signed token in a header — needs no code, while
-/// anything else remains a small impl.
+/// The trait is the extension point: the implementation that ships covers the common case —
+/// a signed token in a header — without the application writing anything, and anything else
+/// (a session cookie, an opaque token store) remains a small impl.
 #[async_trait]
 pub trait Authentication: Send + Sync + 'static {
     /// Identifies the caller, or `Ok(None)` when the request carries no credentials.

@@ -245,8 +245,8 @@ impl<C: Cache + ?Sized> CacheExt for C {
 
 /// A cache in this process: bounded by entries, with per-entry expiry.
 ///
-/// Backed by `moka`, which is the Rust counterpart of the Go original's `otter` — the same
-/// concurrent map with the same eviction and TTL semantics.
+/// Backed by `moka`: a concurrent map with capacity bounds and per-entry expiry, whose cost
+/// is per-entry rather than per-lookup.
 pub struct MemoryCache {
     inner: MokaCache<String, Value>,
     ttl: Option<Duration>,

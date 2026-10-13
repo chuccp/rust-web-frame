@@ -28,8 +28,8 @@ use super::tls::CertStore;
 
 /// How long a listener keeps draining in-flight requests after shutdown is requested.
 ///
-/// The same bound the Go original uses. Without it, one handler that never returns would
-/// keep the process alive indefinitely.
+/// Without a bound, one handler that never returns would keep the process alive
+/// indefinitely.
 pub const DRAIN_GRACE: Duration = Duration::from_secs(30);
 
 /// Binds `config.port` and serves `router` until `cancel` is triggered.

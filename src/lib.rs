@@ -1,11 +1,10 @@
 //! # rust-web-frame
 //!
-//! An opinionated, batteries-included web framework for Rust, ported from the design of
-//! [`go-web-frame`](https://github.com/chuccp/go-web-frame).
+//! An opinionated, batteries-included web framework for Rust.
 //!
-//! The framework is built on top of [axum] (routing / HTTP), [sea-orm] (data access),
-//! `tracing` (logging) and a small hand written configuration layer — the same way the Go
-//! original is built on Gin + GORM + Zap + Viper.
+//! Built on top of [axum] (routing / HTTP), [sea-orm] (data access), `tracing` (logging)
+//! and a small hand-written configuration layer, wired together by one `Builder` and a
+//! container keyed by type.
 //!
 //! ## The three ideas
 //!

@@ -1,7 +1,6 @@
-//! Configuration loading and lookup — the "Viper" of this framework.
+//! Configuration loading and lookup.
 //!
-//! Config files are searched for in the same places the Go original looks, in order of
-//! increasing precedence:
+//! Config files are searched for in four places, in order of increasing precedence:
 //!
 //! 1. `/etc/<app>/config.{json,yaml,yml,toml}`
 //! 2. `~/.<app>/config.{json,yaml,yml,toml}`

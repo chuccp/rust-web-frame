@@ -1,8 +1,8 @@
 //! Address parsing and formatting.
 //!
-//! The Go original has no SMTP client either — `util/mail.go` is these three helpers and
-//! nothing more. Sending mail is a dependency choice (an SMTP crate, a provider's API),
-//! not something a web framework should decide.
+//! No SMTP client here, and deliberately: these three helpers are what a mail header needs,
+//! and sending mail is a dependency choice (an SMTP crate, a provider's API) that a web
+//! framework should not make on the application's behalf.
 
 /// Formats a name and address the way a mail header spells them.
 ///
@@ -21,8 +21,8 @@ pub fn format_address(name: &str, address: &str) -> String {
 
 /// Splits a recipient into its display name and address.
 ///
-/// Accepts `"Name" <a@b>`, `Name <a@b>` and a bare `a@b`, which is what the Go original
-/// does — the three shapes that turn up in a `To:` header.
+/// Accepts `"Name" <a@b>`, `Name <a@b>` and a bare `a@b` — the three shapes that turn up in
+/// a `To:` header.
 ///
 /// # Errors
 ///

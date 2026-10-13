@@ -1,8 +1,7 @@
 //! Dynamic JSON values and object helpers.
 //!
-//! The Go original carries its own `value.Value` / `value.Object` pair. Rust already has
-//! one — [`serde_json::Value`] — so this module is a thin layer of accessors on top of
-//! it rather than a parallel type hierarchy.
+//! [`serde_json::Value`] is already the dynamic value type this layer needs, so the module
+//! is a thin set of accessors on top of it rather than a parallel type hierarchy.
 
 use serde_json::{Map, Value};
 
@@ -20,9 +19,8 @@ pub fn get_path<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
     Some(current)
 }
 
-/// Accessors for [`Object`] that coerce the way the Go original's `GetString`/`GetInt`
-/// do: a value that is not the requested type is converted when that is unambiguous, and
-/// yields the type's zero value when it is not.
+/// Accessors for [`Object`] that coerce: a value that is not the requested type is
+/// converted when that is unambiguous, and yields the type's zero value when it is not.
 pub trait ObjectExt {
     /// A string field. Numbers and booleans are rendered; `null` and missing give `""`.
     fn get_string(&self, key: &str) -> String;

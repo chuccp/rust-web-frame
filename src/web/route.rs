@@ -238,7 +238,7 @@ impl Route {
         self
     }
 
-    /// The path template as registered, in Gin syntax (`/users/:id`, `/static/*filepath`).
+    /// The path template as registered (`/users/:id`, `/static/*filepath`).
     #[must_use]
     pub fn path(&self) -> &str {
         &self.path
@@ -383,7 +383,7 @@ impl std::ops::Deref for RouteHandle {
     }
 }
 
-/// Translates a Gin path template into the syntax axum's router expects.
+/// Translates a registered path template into the syntax axum's router expects.
 ///
 /// * `/users/:id` → `/users/{id}`
 /// * `/static/*filepath` → `/static/{*filepath}`
@@ -399,7 +399,8 @@ pub(crate) fn to_axum_path(path: &str) -> String {
                 out.push_str(name);
                 out.push('}');
             }
-            // Gin spells the catch-all `*name`, axum spells it `{*name}`.
+            // A `:name` parameter and a `*name` catch-all are `{name}` and `{*name}` for
+            // matchit; a `{name}` written by hand passes through as it is.
             None => match segment.strip_prefix('*') {
                 Some(name) => {
                     out.push_str("{*");

@@ -386,7 +386,7 @@ async fn dispatch(state: Dispatcher, req: AxumRequest) -> axum::response::Respon
 
 /// One line per request.
 ///
-/// Logged at `debug`, matching the Go original: raise `log.level` to `debug` (or narrow
+/// Logged at `debug`: raise `log.level` to `debug` (or narrow
 /// it to `rust_web_frame=debug`) to switch access logging on. Failures are logged at
 /// `error` by the converter as well, so they are visible without it.
 fn log_access(

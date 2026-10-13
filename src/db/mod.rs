@@ -1,4 +1,4 @@
-//! Database connectivity — the "GORM" driver layer of this framework.
+//! Database connectivity.
 //!
 //! A [`Database`] is a sea-orm connection pool. [`connect`] builds one from the `db`
 //! section of the configuration file, which *is* sea-orm's [`ConnectOptions`]: a

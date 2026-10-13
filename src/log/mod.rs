@@ -1,4 +1,4 @@
-//! Logging — the "Zap" of this framework, on top of `tracing`.
+//! Logging, on top of `tracing`.
 
 use std::path::PathBuf;
 

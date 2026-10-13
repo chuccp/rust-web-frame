@@ -17,7 +17,8 @@ pub mod code {
     pub const INTERNAL_ERROR: i32 = 500;
     pub const SERVICE_UNAVAILABLE: i32 = 503;
 
-    // Business codes (1000+), following the Go original.
+    // Business codes (1000+): they travel over HTTP 200, so a proxy does not read them as
+    // transport failures.
     pub const VALIDATION_FAILED: i32 = 1001;
     pub const DUPLICATE_ENTRY: i32 = 1002;
     pub const TOKEN_EXPIRED: i32 = 1003;

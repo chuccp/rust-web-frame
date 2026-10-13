@@ -11,11 +11,10 @@
 //! 4. the first local certificate, so a single-certificate deployment answers for any name,
 //! 5. a self-signed certificate, generated on first use and kept.
 //!
-//! **ACME comes before the self-signed fallback.** The Go original had it the other way
-//! round *in effect*: its wildcard matcher ended in `generateSelfSigned`, so it never
-//! returned nil, and the autocert call below it was unreachable — every unknown name got a
-//! self-signed certificate and no order was ever placed. Ordering it correctly here is the
-//! whole point of the module.
+//! **ACME comes before the self-signed fallback.** The order is the point of the module: a
+//! step that always answers makes every step below it unreachable, so a fallback that hands
+//! out a self-signed certificate early means no certificate is ever ordered, and every
+//! unknown name keeps whichever self-signed one was minted for it first.
 //!
 //! Local certificates are re-read when the file's mtime changes, on a background task, so
 //! a renewal written by `certbot` takes effect without a restart. The check costs one

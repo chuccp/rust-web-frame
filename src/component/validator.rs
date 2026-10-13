@@ -246,8 +246,8 @@ impl Validator {
             }
         }
 
-        // Eleven digits starting with a one: the mainland China mobile shape the Go original
-        // validates, with the prefixes above doing the country-code work.
+        // Eleven digits starting with a one: the mainland China mobile shape, with the
+        // prefixes above doing the country-code work.
         let valid = digits.len() == 11
             && digits.starts_with('1')
             && digits.chars().all(|c| c.is_ascii_digit());

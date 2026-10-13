@@ -10,7 +10,7 @@ pub const SERVER_CONFIG_KEY: &str = "web.server";
 /// Default maximum request body size: 10 MiB.
 pub const DEFAULT_MAX_BODY_SIZE: i64 = 10 << 20;
 
-/// Default listen port, kept identical to the Go original so that migration is a no-op.
+/// Default listen port.
 pub const DEFAULT_PORT: u16 = 19009;
 
 /// HTTP server configuration, read from the `web.server` section of the config file.
@@ -33,7 +33,7 @@ pub struct ServerConfig {
     /// Directories served as static files when no route matches.
     pub locations: Vec<PathBuf>,
     /// File served for unmatched browser requests — the SPA fallback.
-    /// Configured as `page404`, matching the Go original.
+    /// Configured as `page404`.
     #[serde(rename = "page404")]
     pub not_found_page: Option<PathBuf>,
     /// Maximum request body size in bytes. `0` means the 10 MiB default, `-1` means

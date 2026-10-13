@@ -1,4 +1,4 @@
-//! The HTTP layer — the "Gin" of this framework.
+//! The HTTP layer.
 //!
 //! * [`Request`] / [`Response`] / [`Message`] — what handlers see and return.
 //! * [`handler`] — turns an async closure or function into a route endpoint.
