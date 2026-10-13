@@ -4,10 +4,12 @@
 //! exposes the same registration methods and forwards them to the server's table, so a
 //! controller can register routes from inside its `init`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use axum::http::Method;
+use tower::ServiceExt;
+use tower_http::services::ServeFile;
 
 use super::BoxFuture;
 use super::error::{Error, Result};
@@ -185,7 +187,10 @@ impl Routes {
         let pattern = format!("{}/*filepath", path.trim_end_matches('/'));
         let handler = handler(move |req: Request| {
             let directory = Arc::clone(&directory);
-            async move { serve_file(&directory, req.param_or("filepath", "")).await }
+            async move {
+                let relative = req.param_or("filepath", "").to_owned();
+                serve_file(&req, &directory, &relative).await
+            }
         });
         self.push_kind(
             vec![Method::GET, Method::HEAD],
@@ -196,34 +201,69 @@ impl Routes {
     }
 }
 
-/// Reads `relative` from `directory`, refusing to escape the root.
-pub(crate) async fn serve_file(directory: &std::path::Path, relative: &str) -> Result<Response> {
+/// Serves `relative` out of `directory`.
+///
+/// The file is streamed from disk by [`ServeFile`], which also implements `Range`,
+/// `ETag`, `Last-Modified`, the conditional request headers, `Accept-Ranges` and the
+/// `206`/`304`/`416` responses that go with them — including answering `HEAD` without a
+/// body. Nothing larger than a buffer is ever held in memory.
+///
+/// This function's own job is the part `ServeFile` cannot do: keep the request inside
+/// `directory`, and report a miss as the framework's envelope rather than as an empty
+/// `404`.
+pub(crate) async fn serve_file(
+    request: &Request,
+    directory: &Path,
+    relative: &str,
+) -> Result<Response> {
     let relative = relative.trim_start_matches('/');
+
     let root = tokio::fs::canonicalize(directory)
         .await
         .map_err(|_| Error::not_found().detail("static directory does not exist"))?;
-    let resolved = tokio::fs::canonicalize(directory.join(relative))
+    let mut resolved = tokio::fs::canonicalize(directory.join(relative))
         .await
         .map_err(|_| Error::not_found().detail(format!("{relative} not found")))?;
 
+    // Canonicalising first means `..` and symlinks are already resolved, so this is a
+    // real containment check rather than a string comparison.
     if !resolved.starts_with(&root) {
         return Err(Error::forbidden().detail("path escapes the static root"));
     }
 
-    match tokio::fs::read(&resolved).await {
-        Ok(bytes) => {
-            let response = axum::response::Response::builder()
-                .status(200)
-                .header("content-type", super::converter::content_type_for(relative))
-                .body(axum::body::Body::from(bytes))
-                .map_err(Error::from)?;
-            Ok(Response::raw(response))
+    if resolved.is_dir() {
+        let index = resolved.join("index.html");
+        if !index.is_file() {
+            return Err(Error::not_found().detail(format!("{relative} not found")));
         }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            Err(Error::not_found().detail(format!("{relative} not found")))
-        }
-        Err(err) => Err(Error::from(err)),
+        resolved = index;
     }
+
+    let response = ServeFile::new(&resolved)
+        .oneshot(to_http_request(request))
+        .await
+        .map_err(|err| {
+            Error::with_source(500, err).detail(format!("cannot read {}", resolved.display()))
+        })?;
+
+    Ok(Response::raw(response.map(axum::body::Body::new)))
+}
+
+/// Rebuilds an `http::Request` from the framework's wrapper.
+///
+/// [`ServeFile`] is a tower service, so it needs one; only the request line and the
+/// headers matter for serving a file, and this handler never reads a body.
+fn to_http_request(request: &Request) -> axum::http::Request<axum::body::Body> {
+    let mut builder = axum::http::Request::builder()
+        .method(request.method().clone())
+        .uri(request.uri().clone());
+    if let Some(headers) = builder.headers_mut() {
+        *headers = request.headers().clone();
+    }
+
+    builder
+        .body(axum::body::Body::empty())
+        .expect("a request line copied from a served request is always valid")
 }
 
 #[cfg(test)]
@@ -273,10 +313,18 @@ mod tests {
         let outside = dir.path().parent().unwrap().join("secret.txt");
         std::fs::write(&outside, "secret").unwrap();
 
-        let response = serve_file(dir.path(), "ok.txt").await.unwrap();
+        let response = serve_file(&Request::for_test("/ok.txt"), dir.path(), "ok.txt")
+            .await
+            .unwrap();
         assert_eq!(response.status().as_u16(), 200);
 
-        let err = serve_file(dir.path(), "../secret.txt").await.unwrap_err();
+        let err = serve_file(
+            &Request::for_test("/../secret.txt"),
+            dir.path(),
+            "../secret.txt",
+        )
+        .await
+        .unwrap_err();
         assert_eq!(err.code, 403);
 
         let _ = std::fs::remove_file(outside);

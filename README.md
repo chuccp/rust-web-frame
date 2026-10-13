@@ -311,6 +311,29 @@ async fn upload(req: Request) -> Result<Message> {
 | `web.server.maxBodySize` | 10 MiB (`-1` = unlimited) | whole request body; over it is `413` |
 | `web.server.maxUploadMemory` | 1 MiB | per-file in-memory budget; past it spills to a temp file |
 
+### Static files
+
+`routes.static_files("/assets", "./public")` and the `web.server.locations` setting both
+stream from disk and speak the full HTTP file protocol — `ETag`, `Last-Modified`,
+`If-None-Match`, `If-Modified-Since`, `Range` with `206`/`416`, `Accept-Ranges`, directory
+indexes, and `HEAD` without a body. Requests are canonicalised before the containment
+check, so `..` and symlinks cannot escape the root.
+
+### Observability
+
+Every request logs one line at `debug` — with the **route template**, so `/users/:id` is
+what you see, not `/users/42`:
+
+```
+DEBUG rust_web_frame::web::server: request method=GET route="/users/:id" path="/users/42" status=200 elapsed_ms=1 client=127.0.0.1
+```
+
+Turn it on with `log.level: debug` or a narrow `rust_web_frame=debug`. Failures are logged
+at `error` whether or not access logging is on.
+
+A handler that panics is caught: the client gets the standard `500` envelope (never the
+panic message), the server keeps serving, and the message goes to the log at `error`.
+
 Two rules worth knowing: a body can be read **once** — calling `multipart()` and then
 `read_body()` fails with a clear `400` rather than silently returning nothing — and
 `req.page()` on a multipart request reads `pageNo`/`pageSize` from the query string,
@@ -327,6 +350,7 @@ since the body holds files rather than JSON.
 | **Responses** | `Response`, `Message` (`{code, data, msg, type}`), `FileResponse`, redirects, raw bodies, `IntoResponse` for the types handlers actually return |
 | **Errors** | `Error` with HTTP *and* business codes, `?`-friendly conversions from `io::Error`, `sea_orm::DbErr`, `serde_json::Error`, `String`, `&str` |
 | **Streaming** | `SseStream`, `WebSocketStream` |
+| **Ops** | access log (one line per request, at `debug`), panic isolation with the standard 500 envelope, graceful shutdown with a bounded runner grace |
 | **Uploads** | `MultipartForm`, `UploadedFile`, `sanitise_file_name`, streamed and spilling to temp files |
 | **Extensibility** | `Filter`, `Converter`, `Runner`, `Rest`, `Service` |
 | **Data** | `db::Database`, `db::transaction`, `Model<E>`, `define_model!`, `ModelGroup`, `Transaction` |

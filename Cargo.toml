@@ -17,7 +17,9 @@ path = "src/lib.rs"
 # HTTP layer (the "Gin" of this framework)
 axum = { version = "0.8.9", features = ["ws", "macros"] }
 tower = { version = "0.5.3", features = ["util"] }
-tower-http = { version = "0.7.1", features = ["fs", "trace", "cors", "limit"] }
+# `fs` serves static files with range and conditional-request support; `catch-panic`
+# keeps a panicking handler from taking the connection down with it.
+tower-http = { version = "0.7.1", features = ["fs", "catch-panic"] }
 
 # Async runtime
 tokio = { version = "1.53.2", features = ["full"] }

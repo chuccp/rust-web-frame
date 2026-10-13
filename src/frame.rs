@@ -338,8 +338,8 @@ impl WebFrame {
     }
 
     async fn start(mut self) -> Result<Started> {
-        let logger = log::init_logger(resolve_log_config(&self.config, self.logging));
-        let _ = &logger;
+        // The guard belongs to the process; nothing here holds it.
+        log::init_logger(resolve_log_config(&self.config, self.logging));
 
         let default_config = crate::core::default_server_config(&self.config);
         crate::core::ensure_distinct_ports(&self.rest_groups, default_config.port)?;

@@ -304,6 +304,26 @@ async fn upload(req: Request) -> Result<Message> {
 | `web.server.maxBodySize` | 10 MiB（`-1` 为不限） | 整个请求体；超出返回 `413` |
 | `web.server.maxUploadMemory` | 1 MiB | 单文件内存预算；超出落临时文件 |
 
+### 静态文件
+
+`routes.static_files("/assets", "./public")` 和 `web.server.locations` 都是流式读盘，并完整支持
+HTTP 文件协议——`ETag`、`Last-Modified`、`If-None-Match`、`If-Modified-Since`、带 `206`/`416`
+的 `Range`、`Accept-Ranges`、目录索引，以及不带 body 的 `HEAD`。请求先 canonicalize 再做包含性
+检查，所以 `..` 和符号链接都逃不出根目录。
+
+### 可观测性
+
+每个请求在 `debug` 级记一行，带的是**路由模板**——你看到的是 `/users/:id` 而不是 `/users/42`：
+
+```
+DEBUG rust_web_frame::web::server: request method=GET route="/users/:id" path="/users/42" status=200 elapsed_ms=1 client=127.0.0.1
+```
+
+用 `log.level: debug` 或更窄的 `rust_web_frame=debug` 打开。失败无论如何都会以 `error` 记录。
+
+panic 会被兜住：客户端拿到标准 `500` 信封（**不会**看到 panic 消息），服务器继续服务，消息以
+`error` 记进日志。
+
 两条值得记住的规则：请求体**只能读一次**——先 `multipart()` 再 `read_body()` 会返回一个
 明确的 `400`，而不是静默返回空；以及 multipart 请求上的 `req.page()` 从 query string 读
 `pageNo`/`pageSize`，因为此时的 body 装的是文件不是 JSON。
@@ -319,6 +339,7 @@ async fn upload(req: Request) -> Result<Message> {
 | **响应** | `Response`、`Message`（`{code, data, msg, type}`）、`FileResponse`、重定向、原始 body，以及为 handler 常用返回类型实现的 `IntoResponse` |
 | **错误** | `Error` 同时承载 HTTP 码与业务码；从 `io::Error`、`sea_orm::DbErr`、`serde_json::Error`、`String`、`&str` 的 `?` 友好转换 |
 | **流式** | `SseStream`、`WebSocketStream` |
+| **运维** | 访问日志（每请求一行，`debug` 级）、panic 隔离并返回标准 500 信封、带 runner 宽限期的优雅关停 |
 | **上传** | `MultipartForm`、`UploadedFile`、`sanitise_file_name`，流式解析并落临时文件 |
 | **扩展点** | `Filter`、`Converter`、`Runner`、`Rest`、`Service` |
 | **数据** | `db::Database`、`db::transaction`、`Model<E>`、`define_model!`、`ModelGroup`、`Transaction` |

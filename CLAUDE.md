@@ -124,9 +124,27 @@ each *distinct* path once, because several routes legitimately share one path.
 
 Dispatch (`Server::router` + `dispatch`): read the body under `effective_max_body_size`,
 extract path params and a pending `WebSocketUpgrade`, build a `Request`, run the
-`FilterChain`, hand the result to the `Converter`. Requests that match no route go to
-`fallback` (static files → SPA page → 404 envelope); requests whose path matched but
-method did not go to the `MethodRouter` fallback and get a 405 envelope.
+`FilterChain`, hand the result to the `Converter`, and log one access line. Requests that
+match no route go to `fallback` (static files → SPA page → 404 envelope); requests whose
+path matched but method did not go to the `MethodRouter` fallback and get a 405 envelope.
+
+Two layers sit outside the chain, applied last so they cover the fallback too:
+
+* `CatchPanicLayer` with [`PanicHandler`](src/web/server.rs). A panic unwinds into hyper
+  otherwise: the client sees a connection reset or a bare 503 with no envelope, and the
+  only trace is the default panic hook, which bypasses `tracing` and never reaches the
+  log file. The panic message goes to the log at `error`; the client gets a generic 500.
+* The access log. One line per request at `debug`, carrying the **route template** rather
+  than just the path, so `/users/:id` is what the log shows. `log.level: debug` (or
+  `rust_web_frame=debug`) turns it on; failures are logged at `error` regardless. A
+  request that panics has no access line — the panic handler logs instead, and the layer
+  has no route context.
+
+Static files go through `tower_http::services::ServeFile`, which streams from disk and
+implements `Range`, `ETag`, `Last-Modified`, the conditional headers, `Accept-Ranges` and
+the `206`/`304`/`416` responses that go with them. `web::routes::serve_file` adds only what
+`ServeFile` cannot do: keep the request inside the root (canonicalise, then compare — so
+`..` and symlinks are already resolved) and report a miss as the envelope.
 
 ### Request bodies (`web/request.rs`, `web/multipart.rs`)
 
@@ -213,9 +231,19 @@ are in place and exercised.
 
 ## Known gaps
 
+* **The server has no timeouts.** `read_header_timeout`, `read_timeout` and
+  `max_header_bytes` deserialise, and their `effective_*` accessors exist, but nothing
+  reads them: `Server::serve` uses plain `axum::serve`, which does not expose hyper's
+  http1 builder. Wiring them means either `axum-server` or driving `hyper-util` directly.
+  Until then the documented defaults are fiction.
+* TLS: `ServerConfig::ssl` is likewise parsed and reported by `ssl_enabled()` but never
+  wired to a listener.
 * SSE streams use fixed headers — `SseStream` cannot add response headers, because the
   response is built before the handler runs.
 * There is no chunked-upload helper for a client that streams *in* without a multipart
   envelope; such a body has to go through `read_body()`, which holds it in memory.
-* TLS: `ServerConfig::ssl` is parsed and reported by `ssl_enabled()` but not yet wired to a
-  listener.
+* `RestGroup::apply_config` replaces the whole `ServerConfig` rather than merging, so a
+  config section that sets only `port` resets everything the code set programmatically.
+* Shutdown waits `SHUTDOWN_GRACE` (5 s) for background runners and then abandons them. A
+  runner that ignores its cancellation token delays shutdown by that much, and its work
+  stops at an arbitrary point.

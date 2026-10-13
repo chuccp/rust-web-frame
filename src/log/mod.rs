@@ -76,20 +76,40 @@ impl LogConfig {
     }
 }
 
-/// Keeps the file-appender worker alive. Dropping it flushes and stops the writer.
-#[must_use = "dropping the guard immediately stops the file appender"]
+/// Keeps the file-appender worker alive.
+///
+/// Dropping it flushes and shuts the writer thread down, after which every line bound for
+/// the file is silently discarded. Applications never hold one: [`init_logger`] keeps the
+/// guard for the lifetime of the process.
 pub struct LogGuard {
     _file: Option<tracing_appender::non_blocking::WorkerGuard>,
 }
 
-/// Initialises the global logger. Safe to call more than once — later calls are ignored.
+/// The process-wide guard. It is never dropped, which is the point.
+static GUARD: std::sync::OnceLock<LogGuard> = std::sync::OnceLock::new();
+
+/// Initialises the global logger and returns the guard that keeps its file appender
+/// alive.
+///
+/// Safe to call more than once: the first call installs the subscriber and later calls
+/// return the guard installed by the first, ignoring their argument.
+///
+/// The guard belongs to the process rather than to the caller. That is deliberate — a
+/// guard stored in a local would shut the writer thread down when that local went out of
+/// scope, so `log.path` would appear to work during startup and then silently drop every
+/// line written afterwards.
 ///
 /// ```no_run
 /// # use rust_web_frame::log::{init_logger, LogConfig};
-/// let _guard = init_logger(LogConfig::at_level("debug"));
+/// init_logger(LogConfig::at_level("debug"));
 /// tracing::info!("logger ready");
 /// ```
-pub fn init_logger(config: LogConfig) -> LogGuard {
+pub fn init_logger(config: LogConfig) -> &'static LogGuard {
+    GUARD.get_or_init(|| install_logger(config))
+}
+
+/// Builds the subscriber and the guard that keeps it writing.
+fn install_logger(config: LogConfig) -> LogGuard {
     let filter = EnvFilter::try_new(&config.level).unwrap_or_else(|_| EnvFilter::new("info"));
 
     let file_guard = config.path.as_ref().map(|path| {
@@ -100,7 +120,12 @@ pub fn init_logger(config: LogConfig) -> LogGuard {
             .unwrap_or_else(|| String::from("app.log"));
         let appender = match directory {
             Some(directory) => {
-                let _ = std::fs::create_dir_all(directory);
+                if let Err(err) = std::fs::create_dir_all(directory) {
+                    eprintln!(
+                        "rust-web-frame: cannot create the log directory {}: {err}",
+                        directory.display()
+                    );
+                }
                 tracing_appender::rolling::daily(directory, file_name)
             }
             None => tracing_appender::rolling::daily(".", file_name),
@@ -173,7 +198,7 @@ mod tests {
     #[test]
     fn logger_initialises_without_a_file() {
         // Subsequent calls are no-ops, so this is safe alongside other tests.
-        let _guard = init_logger(LogConfig::at_level("warn"));
+        init_logger(LogConfig::at_level("warn"));
         tracing::warn!("this line is swallowed by the test harness");
     }
 }

@@ -733,6 +733,201 @@ async fn ordinary_bodies_still_buffer_exactly_as_before() {
     assert_eq!(json["length"], 0);
 }
 
+// ------------------------------------------------------------------- panics
+
+#[tokio::test]
+async fn a_panicking_handler_answers_with_the_envelope() {
+    async fn boom(_req: Request) -> Result<Response> {
+        panic!("the handler exploded");
+    }
+
+    let app = app(|builder| {
+        builder.get("/boom", handler(boom));
+    })
+    .await;
+
+    let (status, json) = call(&app, get("/boom")).await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        json["code"], 500,
+        "a panic must still produce the standard envelope"
+    );
+    // The panic message belongs in the log, not in the response.
+    assert!(
+        !json["msg"].as_str().unwrap().contains("exploded"),
+        "the panic message leaked to the client: {json}"
+    );
+}
+
+#[tokio::test]
+async fn a_panic_does_not_take_the_server_with_it() {
+    async fn boom(_req: Request) -> Result<Response> {
+        panic!("the handler exploded");
+    }
+
+    let app = app(|builder| {
+        builder.get("/boom", handler(boom));
+        builder.get("/ok", handler(|_| async { Ok("still here") }));
+    })
+    .await;
+
+    let (status, _) = call(&app, get("/boom")).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+
+    let (status, _) = call(&app, get("/ok")).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+// -------------------------------------------------------------- static files
+
+/// Serves `./public` under `/assets`, with a directory index inside it.
+async fn static_app(root: &std::path::Path) -> axum::Router {
+    let root = root.to_path_buf();
+    app(move |builder| {
+        let root = root.clone();
+        builder.routes(move |ctx| {
+            ctx.static_files("/assets", root.clone());
+        });
+    })
+    .await
+}
+
+fn fixture() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("hello.txt"), "hello static").unwrap();
+    std::fs::write(dir.path().join("big.bin"), vec![b'x'; 4096]).unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub/index.html"), "<h1>index</h1>").unwrap();
+    dir
+}
+
+#[tokio::test]
+async fn a_static_file_is_served_with_its_content_type() {
+    let dir = fixture();
+    let app = static_app(dir.path()).await;
+
+    let response = app.clone().oneshot(get("/assets/hello.txt")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "text/plain");
+    assert!(
+        response.headers().contains_key("etag"),
+        "an ETag is what makes conditional requests possible"
+    );
+    assert!(response.headers().contains_key("last-modified"));
+    assert_eq!(response.headers()["accept-ranges"], "bytes");
+
+    let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    assert_eq!(&body[..], b"hello static");
+}
+
+#[tokio::test]
+async fn a_static_file_answers_conditional_requests() {
+    let dir = fixture();
+    let app = static_app(dir.path()).await;
+
+    let first = app.clone().oneshot(get("/assets/hello.txt")).await.unwrap();
+    let etag = first.headers()["etag"].clone().to_str().unwrap().to_owned();
+
+    let request = HttpRequest::builder()
+        .uri("/assets/hello.txt")
+        .header("if-none-match", &etag)
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+
+    let modified = first.headers()["last-modified"].clone();
+    let request = HttpRequest::builder()
+        .uri("/assets/hello.txt")
+        .header("if-modified-since", modified)
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+}
+
+#[tokio::test]
+async fn a_static_file_answers_range_requests() {
+    let dir = fixture();
+    let app = static_app(dir.path()).await;
+
+    let request = HttpRequest::builder()
+        .uri("/assets/big.bin")
+        .header("range", "bytes=0-9")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(response.headers()["content-range"], "bytes 0-9/4096");
+    let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    assert_eq!(body.len(), 10);
+}
+
+#[tokio::test]
+async fn a_head_request_for_a_static_file_has_no_body() {
+    let dir = fixture();
+    let app = static_app(dir.path()).await;
+
+    let request = HttpRequest::builder()
+        .method("HEAD")
+        .uri("/assets/big.bin")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-length"], "4096");
+    let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    assert!(body.is_empty(), "HEAD must not carry the file");
+}
+
+#[tokio::test]
+async fn a_directory_serves_its_index() {
+    let dir = fixture();
+    let app = static_app(dir.path()).await;
+
+    let response = app.oneshot(get("/assets/sub/index.html")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    assert_eq!(&body[..], b"<h1>index</h1>");
+}
+
+#[tokio::test]
+async fn a_missing_static_file_is_the_envelope_404() {
+    let dir = fixture();
+    let app = static_app(dir.path()).await;
+
+    let (status, json) = call(&app, get("/assets/nope.txt")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json["code"], 404);
+}
+
+#[tokio::test]
+async fn a_static_path_cannot_escape_its_root() {
+    let dir = fixture();
+    let secret = dir.path().parent().unwrap().join("outside.txt");
+    std::fs::write(&secret, "secret").unwrap();
+
+    let app = static_app(dir.path()).await;
+    let (status, _) = call(&app, get("/assets/../outside.txt")).await;
+
+    assert!(
+        status.is_client_error(),
+        "expected a rejection, got {status}"
+    );
+    let _ = std::fs::remove_file(secret);
+}
+
 // --------------------------------------------------------------- controllers
 
 #[derive(Default)]

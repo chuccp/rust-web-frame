@@ -10,6 +10,7 @@ use axum::http::Method;
 use axum::response::IntoResponse;
 use axum::routing::MethodRouter;
 use tokio::net::TcpListener;
+use tower_http::catch_panic::{CatchPanicLayer, ResponseForPanic};
 
 use super::config::ServerConfig;
 use super::converter::{Converter, DefaultConverter};
@@ -188,10 +189,13 @@ impl Server {
             converter: converter.clone(),
             context,
         };
-        router.fallback(move |req: AxumRequest| {
-            let state = fallback_state.clone();
-            async move { fallback(state, req).await }
-        })
+        router
+            .fallback(move |req: AxumRequest| {
+                let state = fallback_state.clone();
+                async move { fallback(state, req).await }
+            })
+            // Applied last so it wraps every route *and* the fallback.
+            .layer(CatchPanicLayer::custom(PanicHandler))
     }
 
     /// Binds the port and serves until the context is cancelled.
@@ -229,6 +233,7 @@ struct Dispatcher {
 
 /// Runs the filter chain for a matched route and converts the result.
 async fn dispatch(state: Dispatcher, req: AxumRequest) -> axum::response::Response {
+    let started = std::time::Instant::now();
     let (mut parts, body) = req.into_parts();
 
     let params = match Path::<HashMap<String, String>>::from_request_parts(&mut parts, &()).await {
@@ -269,7 +274,31 @@ async fn dispatch(state: Dispatcher, req: AxumRequest) -> axum::response::Respon
 
     let mut chain = FilterChain::new(state.filters.clone(), state.route.handler().clone());
     let result = chain.next(request.clone()).await;
-    state.converter.convert(result, &request).await
+    let response = state.converter.convert(result, &request).await;
+    log_access(&request, state.route.path(), &response, started);
+    response
+}
+
+/// One line per request.
+///
+/// Logged at `debug`, matching the Go original: raise `log.level` to `debug` (or narrow
+/// it to `rust_web_frame=debug`) to switch access logging on. Failures are logged at
+/// `error` by the converter as well, so they are visible without it.
+fn log_access(
+    request: &Request,
+    route: &str,
+    response: &axum::response::Response,
+    started: std::time::Instant,
+) {
+    tracing::debug!(
+        method = %request.method(),
+        route,
+        path = request.path(),
+        status = response.status().as_u16(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        client = %request.client_ip(),
+        "request"
+    );
 }
 
 #[derive(Clone)]
@@ -281,6 +310,7 @@ struct FallbackState {
 
 /// Routes requests that matched no route: static files, the SPA fallback, then 404.
 async fn fallback(state: FallbackState, req: AxumRequest) -> axum::response::Response {
+    let started = std::time::Instant::now();
     // The fallback bypasses the filter chain, so build a request by hand.
     let (parts, body) = req.into_parts();
     let body = crate::web::request::read_to_bytes(body, state.config.effective_max_body_size())
@@ -306,7 +336,7 @@ async fn fallback(state: FallbackState, req: AxumRequest) -> axum::response::Res
 
     // 1. A file from one of the configured static directories.
     for directory in &state.config.locations {
-        if let Ok(response) = super::routes::serve_file(directory, &path).await {
+        if let Ok(response) = super::routes::serve_file(&request, directory, &path).await {
             return state.converter.convert(Ok(response), &request).await;
         }
     }
@@ -330,12 +360,75 @@ async fn fallback(state: FallbackState, req: AxumRequest) -> axum::response::Res
         request.method(),
         parts.uri.path()
     ));
-    state.converter.convert(Err(error), &request).await
+    let response = state.converter.convert(Err(error), &request).await;
+    tracing::debug!(
+        method = %request.method(),
+        path = parts.uri.path(),
+        status = response.status().as_u16(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "request"
+    );
+    response
 }
 
 fn accepts_html(req: &Request) -> bool {
     req.header("accept")
         .is_some_and(|accept| accept.contains("text/html"))
+}
+
+/// Renders an error envelope with the given status.
+///
+/// Used where the converter cannot reach: the panic handler, which runs outside the
+/// filter chain, and the method-not-allowed fallback, which never builds a request.
+fn error_envelope_response(status: u16, code: i32, message: &str) -> axum::response::Response {
+    let envelope = Message {
+        code,
+        data: serde_json::Value::Null,
+        message: message.to_owned(),
+        kind: String::new(),
+    };
+    let body = serde_json::to_string(&envelope).unwrap_or_else(|_| String::from("{}"));
+    axum::response::Response::builder()
+        .status(status)
+        .header("content-type", "application/json; charset=utf-8")
+        .body(axum::body::Body::from(body))
+        .unwrap_or_else(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// Turns a panicking handler into the framework's 500 envelope.
+///
+/// Without this a panic unwinds into hyper's connection task. The client then sees a
+/// connection reset or a bare `503` with no body — indistinguishable from a real
+/// capacity failure — and the only trace is the default panic hook, which does not go
+/// through `tracing` and so never reaches the configured log file.
+#[derive(Clone, Copy, Debug, Default)]
+struct PanicHandler;
+
+impl ResponseForPanic for PanicHandler {
+    type ResponseBody = axum::body::Body;
+
+    fn response_for_panic(
+        &mut self,
+        payload: Box<dyn std::any::Any + Send + 'static>,
+    ) -> axum::response::Response {
+        // The panic message is for the operator, not for the client.
+        // `payload.as_ref()`, not `&payload`: `Box<dyn Any>` implements `Any` itself,
+        // so a `&Box<...>` would be downcast against the box rather than its contents.
+        tracing::error!(panic = %panic_message(payload.as_ref()), "a handler panicked");
+        error_envelope_response(500, 500, "internal server error")
+    }
+}
+
+/// Best-effort rendering of a panic payload, which is a `&str` or a `String` for every
+/// panic raised by `panic!`.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(text) = payload.downcast_ref::<&'static str>() {
+        return (*text).to_owned();
+    }
+    if let Some(text) = payload.downcast_ref::<String>() {
+        return text.clone();
+    }
+    String::from("a handler panicked with a payload that is not a string")
 }
 
 /// Renders the `Allow` header for a set of methods.
@@ -349,19 +442,11 @@ fn allowed_header(methods: &[Method]) -> String {
 
 /// The envelope sent for a request whose path matched but whose method did not.
 fn method_not_allowed(allowed: String) -> axum::response::Response {
-    let message = Message {
-        code: 405,
-        data: serde_json::Value::Null,
-        message: String::from("method not allowed"),
-        kind: String::new(),
-    };
-    let body = serde_json::to_string(&message).unwrap_or_else(|_| String::from("{}"));
-    axum::response::Response::builder()
-        .status(405)
-        .header("content-type", "application/json; charset=utf-8")
-        .header("allow", allowed)
-        .body(axum::body::Body::from(body))
-        .unwrap_or_else(|_| axum::http::StatusCode::METHOD_NOT_ALLOWED.into_response())
+    let mut response = error_envelope_response(405, 405, "method not allowed");
+    if let Ok(value) = axum::http::HeaderValue::from_str(&allowed) {
+        response.headers_mut().insert("allow", value);
+    }
+    response
 }
 
 fn method_filter(method: Method) -> axum::routing::MethodFilter {
