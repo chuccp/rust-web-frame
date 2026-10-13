@@ -346,9 +346,14 @@ async fn a_symlink_out_of_the_root_is_refused() {
 
     let root = tempfile::tempdir().unwrap();
     let link = root.path().join("link.txt");
+    let target = outside.path().join("secret.txt");
     // Creating a symlink needs a privilege the test may not have on Windows; the
     // canonicalisation check is still exercised by the `..` case elsewhere.
-    if std::os::windows::fs::symlink_file(outside.path().join("secret.txt"), &link).is_err() {
+    #[cfg(windows)]
+    let created = std::os::windows::fs::symlink_file(target, &link);
+    #[cfg(unix)]
+    let created = std::os::unix::fs::symlink(target, &link);
+    if created.is_err() {
         return;
     }
 
