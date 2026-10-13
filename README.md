@@ -72,6 +72,7 @@ forget the check. See [`examples/withmeta.rs`](examples/withmeta.rs) for the who
 | `req.has_meta(option)` | filter / handler | `true` if this route satisfies the option. |
 | `req.handler_meta()` | filter / handler | The underlying `HandlerMeta` (`get`, `contains_key`, …). |
 | `req.set_attr` / `req.attr::<T>` | filter → handler | Pass request-scoped data down the chain. |
+| `req.set_response_header(name, value)` | filter / handler | Queue a response header applied to **every** response, error envelopes included — where `X-Request-Id` belongs. |
 
 ### 2. Queries stay sea-orm's
 
@@ -509,12 +510,18 @@ builder.rest_group(admin);
 ## Development
 
 ```bash
-cargo test                      # unit, integration and doc tests
+cargo test                      # 292 tests: unit, integration and doc
 cargo clippy --all-targets      # no warnings
 cargo fmt
 cargo run --example rest        # run an example
 cargo test --features mysql     # build against another driver
 ```
+
+Most of the integration tests drive a **real socket** rather than the router in
+isolation — a connection that stays open (WebSocket, SSE), a client that dribbles its
+headers, a certificate replaced on disk, a request still in flight when the server is
+asked to stop. Those are the paths where a web framework's bugs live, and the ones a
+request/response test cannot reach.
 
 Feature flags: `sqlite` (default), `mysql`, `postgres`.
 
@@ -541,10 +548,12 @@ The design is the same; the language forces a few honest changes.
 | Reflection by struct name | `TypeId`-keyed registry, `ctx.service::<T>()` | No runtime reflection. |
 | `ctx.Get(...).WithMeta(...)` returns `*Route` | `ctx.get(...)` returns `RouteHandle`, `with_meta` consumes it | Idiomatic Rust builder, same chaining. |
 | `c.MultipartForm()` (parses into memory, spills past 32 MiB) | `req.multipart().await?` (streamed, spills past 1 MiB) | Streaming keeps a large upload off the heap entirely, not just under a threshold. |
+| `autocert` for Let's Encrypt | the same, but the resolver order is fixed | The Go wildcard matcher ended in `generateSelfSigned`, so it never returned nil and the `autocert` call below it was unreachable — no certificate was ever ordered, and every unknown name got a self-signed one. The order here is exact match → wildcard → **ACME** → first certificate → self-signed. |
+| ACME over HTTP-01 on a second port | ACME over TLS-ALPN-01 on the one port | No second listener, and no argument over who owns port 80. |
 
-Not implemented in this iteration: captcha, QR codes, mail, reverse proxy, the TLS
-listener, and the component crates (`component/cache`, `component/ratelimit`, …). The
-extension points for them — `Filter`, `Service`, `Converter` — are all in place.
+Not implemented in this iteration: captcha, QR codes, mail, reverse proxy, and the
+component crates (`component/cache`, `component/ratelimit`, …). The extension points for
+them — `Filter`, `Service`, `Converter` — are all in place.
 
 ---
 

@@ -69,6 +69,7 @@ impl Filter for AuthFilter {
 | `req.has_meta(option)` | filter / handler | 当前路由是否满足该 option。 |
 | `req.handler_meta()` | filter / handler | 底层的 `HandlerMeta`（`get`、`contains_key` 等）。 |
 | `req.set_attr` / `req.attr::<T>` | filter → handler | 沿链条向下传递请求级数据。 |
+| `req.set_response_header(name, value)` | filter / handler | 排入一个应用到**所有**响应的响应头，**包括错误信封**——`X-Request-Id` 正该放这儿。 |
 
 ### 2. 查询就是 sea-orm
 
@@ -485,12 +486,16 @@ builder.rest_group(admin);
 ## 开发
 
 ```bash
-cargo test                      # 单元测试、集成测试、文档测试
+cargo test                      # 292 个测试：单元、集成、文档
 cargo clippy --all-targets      # 无警告
 cargo fmt
 cargo run --example rest        # 跑示例
 cargo test --features mysql     # 换一个数据库驱动编译
 ```
+
+集成测试大多打的是**真实 socket**，而不是孤立的路由器——保持打开的连接（WebSocket、SSE）、
+一个字节一个字节发请求头的客户端、被换掉的证书文件、关停时还在飞的请求。Web 框架的 bug
+就住在这些路径上，而一问一答式的测试够不着它们。
 
 feature 开关：`sqlite`（默认）、`mysql`、`postgres`。
 
@@ -517,8 +522,10 @@ feature 开关：`sqlite`（默认）、`mysql`、`postgres`。
 | 按结构体名反射 | 以 `TypeId` 为键的注册表，`ctx.service::<T>()` | Rust 没有运行时反射。 |
 | `ctx.Get(...).WithMeta(...)` 返回 `*Route` | `ctx.get(...)` 返回 `RouteHandle`，`with_meta` 消费它 | 惯用的 Rust builder，链式调用不变。 |
 | `c.MultipartForm()`（解析进内存，超过 32 MiB 落盘） | `req.multipart().await?`（流式，超过 1 MiB 落盘） | 流式处理让大文件根本不进堆，而不只是"控制在一个阈值以内"。 |
+| `autocert` 对接 Let's Encrypt | 同样，但修正了 resolver 的顺序 | Go 的通配符匹配函数结尾是 `generateSelfSigned`，永不返回 nil，所以它下面那行 `autocert` 调用是死代码——**订单从未发起过**，每个未知域名拿到的都是自签证书。这里的顺序是：精确匹配 → 通配符 → **ACME** → 第一张证书 → 自签。 |
+| ACME 走另一个端口的 HTTP-01 | ACME 走同一个端口的 TLS-ALPN-01 | 不需要第二个监听器，也不用争 80 端口归谁。 |
 
-这一版没有实现：验证码、二维码、邮件、反向代理、TLS 监听，以及 `component/` 下的那些组件
+这一版没有实现：验证码、二维码、邮件、反向代理，以及 `component/` 下的那些组件
 （`cache`、`ratelimit` 等）。它们的扩展点——`Filter`、`Service`、`Converter`——都已就位。
 
 ---
