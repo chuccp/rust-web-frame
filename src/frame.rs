@@ -406,6 +406,7 @@ impl WebFrame {
         }
 
         for server in &servers {
+            server.validate_config()?;
             server.validate()?;
         }
 

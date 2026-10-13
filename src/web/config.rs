@@ -50,6 +50,53 @@ pub struct ServerConfig {
     pub max_header_bytes: usize,
     /// TLS configuration. `None` serves plain HTTP.
     pub ssl: Option<SslConfig>,
+    /// Cross-origin policy. `None` sends no CORS headers at all, which is the safe
+    /// default: a browser on another origin simply cannot read the response.
+    pub cors: Option<CorsConfig>,
+}
+
+/// Cross-origin resource sharing, read from the `web.server.cors` section.
+///
+/// Configured, it is applied as a layer outside the router, so a preflight `OPTIONS` is
+/// answered before routing — such a request matches no route, and would otherwise be a
+/// `405` with no CORS headers on it.
+///
+/// ```yaml
+/// web:
+///   server:
+///     cors:
+///       allowedOrigins: ["https://app.example.com"]
+///       allowedMethods: [GET, POST]
+///       allowedHeaders: [content-type, authorization]
+///       allowCredentials: true
+///       maxAge: 3600
+/// ```
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CorsConfig {
+    /// Origins allowed to read responses. `["*"]` allows any, which browsers refuse to
+    /// combine with credentials.
+    pub allowed_origins: Vec<String>,
+    /// Methods allowed on a preflight. Empty means the browser default set.
+    pub allowed_methods: Vec<String>,
+    /// Request headers a client may send. Empty means the browser default set.
+    pub allowed_headers: Vec<String>,
+    /// Response headers a client may read.
+    pub exposed_headers: Vec<String>,
+    /// Whether to send `Access-Control-Allow-Credentials`.
+    pub allow_credentials: bool,
+    /// How long a browser may cache the preflight, in seconds.
+    pub max_age: Option<u64>,
+}
+
+impl CorsConfig {
+    /// Reports whether this configuration would actually send anything.
+    #[must_use]
+    pub fn is_configured(&self) -> bool {
+        !self.allowed_origins.is_empty()
+            || !self.allowed_methods.is_empty()
+            || !self.allowed_headers.is_empty()
+    }
 }
 
 impl Default for ServerConfig {
@@ -65,6 +112,7 @@ impl Default for ServerConfig {
             read_timeout: 0,
             max_header_bytes: 0,
             ssl: None,
+            cors: None,
         }
     }
 }
@@ -94,6 +142,20 @@ impl ServerConfig {
     pub fn with_not_found_page(mut self, path: impl Into<PathBuf>) -> Self {
         self.not_found_page = Some(path.into());
         self
+    }
+
+    /// Normalises the route prefix in place: either empty, or `/something` with no
+    /// trailing slash.
+    ///
+    /// A `contextPath` written as `api`, `/api/` or `/api` all mean the same thing, and
+    /// only one of them joins correctly with a route path.
+    pub fn normalise(&mut self) {
+        let trimmed = self.context_path.trim().trim_matches('/').to_owned();
+        self.context_path = if trimmed.is_empty() {
+            String::new()
+        } else {
+            format!("/{trimmed}")
+        };
     }
 
     /// Reports whether TLS is enabled.
@@ -138,11 +200,29 @@ impl ServerConfig {
     }
 
     /// The effective maximum request head size.
+    ///
+    /// Clamped to what hyper can actually do: its http/1 reader asserts a minimum read
+    /// buffer of 8 KiB, and passing less panics on the connection that happens to be
+    /// serving the request. A ceiling below that is not expressible, so it is raised and
+    /// said out loud rather than crashing a connection later.
     pub fn effective_max_header_bytes(&self) -> usize {
-        if self.max_header_bytes > 0 {
+        const HYPER_MINIMUM: usize = 8 * 1024;
+
+        let configured = if self.max_header_bytes > 0 {
             self.max_header_bytes
         } else {
             16 * 1024
+        };
+
+        if configured < HYPER_MINIMUM {
+            tracing::warn!(
+                configured,
+                raisedTo = HYPER_MINIMUM,
+                "`web.server.maxHeaderBytes` is below the 8 KiB a connection needs, raising it"
+            );
+            HYPER_MINIMUM
+        } else {
+            configured
         }
     }
 }
@@ -187,6 +267,19 @@ mod tests {
     }
 
     #[test]
+    fn a_tiny_header_cap_is_raised_to_what_hyper_can_do() {
+        let mut config = ServerConfig::default();
+        assert_eq!(config.effective_max_header_bytes(), 16 * 1024);
+
+        // Below hyper's http/1 minimum, which would panic on the connection.
+        config.max_header_bytes = 512;
+        assert_eq!(config.effective_max_header_bytes(), 8 * 1024);
+
+        config.max_header_bytes = 32 * 1024;
+        assert_eq!(config.effective_max_header_bytes(), 32 * 1024);
+    }
+
+    #[test]
     fn upload_memory_defaults_to_one_mebibyte() {
         let mut config = ServerConfig::default();
         assert_eq!(
@@ -196,6 +289,40 @@ mod tests {
 
         config.max_upload_memory = 4096;
         assert_eq!(config.effective_max_upload_memory(), 4096);
+    }
+
+    #[test]
+    fn the_context_path_is_normalised() {
+        for (written, expected) in [
+            ("/api", "/api"),
+            ("api", "/api"),
+            ("/api/", "/api"),
+            ("  /api/v1/  ", "/api/v1"),
+            ("", ""),
+            ("/", ""),
+        ] {
+            let mut config = ServerConfig {
+                context_path: written.to_owned(),
+                ..ServerConfig::default()
+            };
+            config.normalise();
+            assert_eq!(config.context_path, expected, "from {written:?}");
+        }
+    }
+
+    #[test]
+    fn cors_is_absent_unless_configured() {
+        let config = ServerConfig::default();
+        assert!(config.cors.is_none());
+
+        let parsed: ServerConfig = serde_json::from_value(serde_json::json!({
+            "cors": {"allowedOrigins": ["https://example.com"], "allowCredentials": true}
+        }))
+        .unwrap();
+        let cors = parsed.cors.unwrap();
+        assert_eq!(cors.allowed_origins, ["https://example.com"]);
+        assert!(cors.allow_credentials);
+        assert!(cors.is_configured());
     }
 
     #[test]

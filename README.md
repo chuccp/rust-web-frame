@@ -328,6 +328,47 @@ async fn upload(req: Request) -> Result<Message> {
 | `web.server.maxBodySize` | 10 MiB (`-1` = unlimited) | whole request body; over it is `413` |
 | `web.server.maxUploadMemory` | 1 MiB | per-file in-memory budget; past it spills to a temp file |
 
+### Server limits (all of them live)
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `readHeaderTimeout` | 15 s | time a client may take over its request headers; one that dribbles them is disconnected |
+| `readTimeout` | none | time a client may take over the request **body**; over it is `408` and the connection closes |
+| `maxHeaderBytes` | 16 KiB | ceiling on the request head. Values below 8 KiB are raised to it — that is the smallest read buffer an HTTP/1 connection can use |
+
+`readTimeout` bounds *reading* only. A slow **response** — an SSE stream, a WebSocket — is
+never cut off by it.
+
+### CORS
+
+Omitted, no CORS headers are sent at all, which is the safe default: a browser on another
+origin simply cannot read the response. Configured, the policy is applied outside the
+router, so a preflight `OPTIONS` is answered even though it matches no route — without it
+that request would be a `405`:
+
+```yaml
+web:
+  server:
+    cors:
+      allowedOrigins: ["https://app.example.com"]   # or ["*"]
+      allowedMethods: [GET, POST]
+      allowedHeaders: [content-type, authorization]
+      allowCredentials: true
+      maxAge: 3600
+```
+
+An origin or method that is not a valid header is a startup error, not a request that
+quietly loses a header.
+
+### `contextPath`, and where static files live
+
+`contextPath` prefixes every route. Written as `api`, `/api/` or `/api` it means the same
+thing — it is normalised to `/api` — and the prefix is stripped again when the fallback
+looks a request up in `locations`, so an SPA can sit at `/` while the API sits at `/api`.
+
+`locations` map onto the URL **root**: each directory *is* the root, so
+`./public/report.csv` is served at `/report.csv`, not `/public/report.csv`.
+
 ### Static files
 
 `routes.static_files("/assets", "./public")` and the `web.server.locations` setting both
@@ -367,7 +408,7 @@ since the body holds files rather than JSON.
 | **Responses** | `Response`, `Message` (`{code, data, msg, type}`), `FileResponse`, redirects, raw bodies, `IntoResponse` for the types handlers actually return |
 | **Errors** | `Error` with HTTP *and* business codes, `?`-friendly conversions from `io::Error`, `sea_orm::DbErr`, `serde_json::Error`, `String`, `&str` |
 | **Streaming** | `SseStream`, `WebSocketStream` |
-| **Ops** | access log (one line per request, at `debug`), panic isolation with the standard 500 envelope, graceful shutdown with a bounded runner grace |
+| **Ops** | access log (one line per request, at `debug`), panic isolation with the standard 500 envelope, request timeouts, CORS, graceful shutdown with bounded runner and connection graces |
 | **Uploads** | `MultipartForm`, `UploadedFile`, `sanitise_file_name`, streamed and spilling to temp files |
 | **Extensibility** | `Filter`, `Converter`, `Runner`, `Rest`, `Service` |
 | **Data** | `db::Database` (pool *or* transaction), `db::transaction`, `Model<E>`, `define_model!`, `ModelGroup` — queries themselves are [sea-orm](https://docs.rs/sea-orm)'s |

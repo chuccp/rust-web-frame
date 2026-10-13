@@ -362,17 +362,18 @@ impl Request {
             Body::Buffered(bytes) => Ok(bytes),
             Body::Streaming(slot) => {
                 let limit = self.inner.server_config.effective_max_body_size();
-                self.inner
-                    .buffered
-                    .get_or_try_init(|| async {
+                within_read_timeout(
+                    &self.inner.server_config,
+                    self.inner.buffered.get_or_try_init(|| async {
                         let body = slot
                             .lock()
                             .expect("body lock poisoned")
                             .take()
                             .ok_or_else(|| Error::bad_request().detail(BODY_ALREADY_READ))?;
                         read_to_bytes(body, limit).await
-                    })
-                    .await
+                    }),
+                )
+                .await
             }
         }
     }
@@ -435,7 +436,11 @@ impl Request {
                             .expect("body lock poisoned")
                             .take()
                             .ok_or_else(|| Error::bad_request().detail(BODY_ALREADY_READ))?;
-                        super::multipart::parse(body.into_data_stream(), content_type, limits).await
+                        within_read_timeout(
+                            &self.inner.server_config,
+                            super::multipart::parse(body.into_data_stream(), content_type, limits),
+                        )
+                        .await
                     }
                     // A multipart body that arrived buffered — a test, or a caller that
                     // read it first — is parsed from memory.
@@ -750,6 +755,27 @@ impl Request {
     /// The extension map of the underlying HTTP request.
     pub fn extensions(&self) -> &axum::http::Extensions {
         &self.inner.parts.extensions
+    }
+}
+
+/// Runs `future` under the configured read timeout.
+///
+/// hyper bounds how long a client may take over its *headers*
+/// ([`ServerConfig::read_header_timeout`]), but not over the body. This is the other
+/// half, and it covers reading only — a slow *response* (an SSE stream, a WebSocket) is
+/// never touched by it.
+pub(crate) async fn within_read_timeout<T>(
+    config: &ServerConfig,
+    future: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    match config.effective_read_timeout() {
+        Some(timeout) => match tokio::time::timeout(timeout, future).await {
+            Ok(result) => result,
+            Err(_) => Err(Error::new(408, "request timeout").detail(format!(
+                "the request body did not arrive within {timeout:?} — raise `web.server.readTimeout` to allow slower clients"
+            ))),
+        },
+        None => future.await,
     }
 }
 

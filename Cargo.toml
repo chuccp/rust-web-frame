@@ -19,7 +19,7 @@ axum = { version = "0.8.9", features = ["ws", "macros"] }
 tower = { version = "0.5.3", features = ["util"] }
 # `fs` serves static files with range and conditional-request support; `catch-panic`
 # keeps a panicking handler from taking the connection down with it.
-tower-http = { version = "0.7.1", features = ["fs", "catch-panic"] }
+tower-http = { version = "0.7.1", features = ["fs", "catch-panic", "cors"] }
 
 # Async runtime
 tokio = { version = "1.53.2", features = ["full"] }
@@ -56,6 +56,8 @@ percent-encoding = "2.3.2"
 matchit = "0.9.2"
 multer = "3.1.0"
 tempfile = "3"
+hyper = { version = "1.12.0", features = ["http1", "http2", "server"] }
+hyper-util = { version = "0.1.21", features = ["tokio", "server-auto", "server", "service"] }
 
 [features]
 default = ["sqlite"]

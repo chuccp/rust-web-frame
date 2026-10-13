@@ -146,6 +146,27 @@ the `206`/`304`/`416` responses that go with them. `web::routes::serve_file` add
 `ServeFile` cannot do: keep the request inside the root (canonicalise, then compare — so
 `..` and symlinks are already resolved) and report a miss as the envelope.
 
+### The listener (`web/listener.rs`)
+
+The accept loop is written out rather than delegated to `axum::serve`, which builds its
+hyper connection with stock defaults and exposes no way in — with it, `read_header_timeout`
+and `max_header_bytes` were configuration that changed nothing. What this buys:
+
+* `header_read_timeout` and `max_buf_size` on the http/1 builder. hyper *asserts* a
+  minimum buffer of 8 KiB, so `ServerConfig::effective_max_header_bytes` raises anything
+  smaller with a warning rather than letting a connection panic later.
+* `read_timeout` has no hyper equivalent (it covers the body, not the head), so it is
+  applied where the body is read: `request::within_read_timeout` wraps both `read_to_bytes`
+  in dispatch and the multipart parse. It bounds *reading* only, so a slow response — SSE,
+  WebSocket — is untouched. A `408` closes the connection, because a client that never
+  finished its body would otherwise have its next bytes parsed as this request's tail.
+* Connection draining, with the Go original's 30 s `DRAIN_GRACE`.
+
+Everything else follows axum's own shape: a task per connection,
+`serve_connection_with_upgrades` so WebSockets still upgrade, and a `WithPeer` service that
+inserts `ConnectInfo` — axum's `into_make_service_with_connect_info` resolves through the
+`Connected` trait, which is ambiguous for a bare `SocketAddr`.
+
 ### Request bodies (`web/request.rs`, `web/multipart.rs`)
 
 `Request::body` is an enum, not a `Bytes`:
@@ -239,19 +260,16 @@ are in place and exercised.
 
 ## Known gaps
 
-* **The server has no timeouts.** `read_header_timeout`, `read_timeout` and
-  `max_header_bytes` deserialise, and their `effective_*` accessors exist, but nothing
-  reads them: `Server::serve` uses plain `axum::serve`, which does not expose hyper's
-  http1 builder. Wiring them means either `axum-server` or driving `hyper-util` directly.
-  Until then the documented defaults are fiction.
-* TLS: `ServerConfig::ssl` is likewise parsed and reported by `ssl_enabled()` but never
-  wired to a listener.
+* **TLS is not implemented.** `ServerConfig::ssl` deserialises and `ssl_enabled()` reports
+  it, but `SslConfig` has no `hosts` field — so the Go original's Let's Encrypt auto-cert
+  is not merely unwired, it is not expressible. `Server::serve` now *refuses to start* when
+  `ssl.enabled` is set, rather than quietly serving plain HTTP on a port the config says is
+  HTTPS. Implementing it means an ACME client (`rustls-acme` / `instant-acme`) plus a cert
+  store.
 * SSE streams use fixed headers — `SseStream` cannot add response headers, because the
   response is built before the handler runs.
 * There is no chunked-upload helper for a client that streams *in* without a multipart
   envelope; such a body has to go through `read_body()`, which holds it in memory.
-* `RestGroup::apply_config` replaces the whole `ServerConfig` rather than merging, so a
-  config section that sets only `port` resets everything the code set programmatically.
-* Shutdown waits `SHUTDOWN_GRACE` (5 s) for background runners and then abandons them. A
-  runner that ignores its cancellation token delays shutdown by that much, and its work
-  stops at an arbitrary point.
+* Shutdown waits a bounded grace for runners (5 s) and in-flight connections (30 s), then
+  abandons them. A runner that ignores its cancellation token has its work stopped at an
+  arbitrary point.

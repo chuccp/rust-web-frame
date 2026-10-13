@@ -1,7 +1,6 @@
 //! The HTTP server: routing, dispatch and lifecycle.
 
 use std::collections::{HashMap, HashSet};
-use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
 
 use axum::Router;
@@ -9,8 +8,8 @@ use axum::extract::{FromRequestParts, Path, Request as AxumRequest};
 use axum::http::Method;
 use axum::response::IntoResponse;
 use axum::routing::MethodRouter;
-use tokio::net::TcpListener;
 use tower_http::catch_panic::{CatchPanicLayer, ResponseForPanic};
+use tower_http::cors::{Any, CorsLayer};
 
 use super::config::ServerConfig;
 use super::converter::{Converter, DefaultConverter};
@@ -48,7 +47,11 @@ impl std::fmt::Debug for Server {
 
 impl Server {
     /// A server with no routes, no filters and the default converter.
-    pub fn new(config: ServerConfig) -> Self {
+    ///
+    /// The configuration is normalised here, so every later reader sees a route prefix
+    /// in one shape.
+    pub fn new(mut config: ServerConfig) -> Self {
+        config.normalise();
         Self {
             config: Arc::new(config),
             handles: Arc::new(Routes::new()),
@@ -105,6 +108,25 @@ impl Server {
     /// here.
     pub fn merge_routes(&self, routes: &Routes) {
         self.handles.extend(routes.entries());
+    }
+
+    /// Checks the route table and the configuration for mistakes that would otherwise
+    /// surface as a panic while binding, or as a silently missing header.
+    ///
+    /// # Errors
+    ///
+    /// Fails on a duplicate route, an unparsable path template, or a CORS origin or
+    /// method that is not a valid header value.
+    pub fn validate_config(&self) -> Result<()> {
+        if let Some(cors) = self
+            .config
+            .cors
+            .as_ref()
+            .filter(|cors| cors.is_configured())
+        {
+            let _ = cors_layer(cors)?;
+        }
+        Ok(())
     }
 
     /// Checks the route table for mistakes that would otherwise surface as a panic while
@@ -189,35 +211,60 @@ impl Server {
             converter: converter.clone(),
             context,
         };
-        router
+        let router = router
             .fallback(move |req: AxumRequest| {
                 let state = fallback_state.clone();
                 async move { fallback(state, req).await }
             })
-            // Applied last so it wraps every route *and* the fallback.
-            .layer(CatchPanicLayer::custom(PanicHandler))
+            // Applied in order, so the last one added is the outermost.
+            .layer(CatchPanicLayer::custom(PanicHandler));
+
+        // CORS goes outside everything, because a preflight `OPTIONS` matches no route
+        // and has to be answered before routing decides it is a 405.
+        match self
+            .config
+            .cors
+            .as_ref()
+            .filter(|cors| cors.is_configured())
+        {
+            Some(cors) => match cors_layer(cors) {
+                Ok(layer) => {
+                    tracing::debug!(
+                        origins = ?cors.allowed_origins,
+                        "cors enabled"
+                    );
+                    router.layer(layer)
+                }
+                Err(error) => {
+                    // The router is already built; there is nowhere to report this but
+                    // the log. `validate` catches it before the port is bound.
+                    tracing::error!(error = %error, "cors configuration is invalid");
+                    router
+                }
+            },
+            None => router,
+        }
     }
 
     /// Binds the port and serves until the context is cancelled.
+    ///
+    /// The accept loop lives in [`listener`](super::listener); this is the entry point
+    /// that builds the router and hands over the cancellation token.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the port cannot be bound.
     pub async fn serve(self: &Arc<Self>, context: Context) -> Result<()> {
+        if self.config.ssl_enabled() {
+            // Silently serving plain HTTP on a port the config says is HTTPS would be
+            // worse than refusing to start.
+            return Err(Error::new(500, "TLS is configured but not implemented").detail(
+                "`web.server.ssl` is not wired to a listener yet — remove the section to serve plain HTTP",
+            ));
+        }
+
         let router = self.router(context.clone());
-        let addr = SocketAddr::from(([0, 0, 0, 0], self.config.port));
-        let listener = TcpListener::bind(addr).await.map_err(|err| {
-            Error::with_source(500, err).detail(format!("cannot bind port {}", self.config.port))
-        })?;
-
-        tracing::info!(port = self.config.port, "server listening");
-
-        let cancel = context.cancellation_token();
-        axum::serve(
-            listener,
-            router.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .with_graceful_shutdown(async move { cancel.cancelled().await })
-        .await
-        .map_err(Error::from)?;
-
-        Ok(())
+        super::listener::serve(router, &self.config, context.cancellation_token()).await
     }
 }
 
@@ -249,14 +296,24 @@ async fn dispatch(state: Dispatcher, req: AxumRequest) -> axum::response::Respon
     let body = if crate::web::request::is_multipart_content_type(&parts) {
         Body::Streaming(Mutex::new(Some(body)))
     } else {
-        match crate::web::request::read_to_bytes(body, state.config.effective_max_body_size()).await
-        {
+        let read = crate::web::request::read_to_bytes(body, state.config.effective_max_body_size());
+        match crate::web::request::within_read_timeout(&state.config, read).await {
             Ok(bytes) => Body::Buffered(bytes),
             Err(error) => {
-                return state
+                let mut response = state
                     .converter
                     .convert(Err(error), &Request::for_test("/"))
                     .await;
+                // A body that never finished arriving leaves the connection mid-request:
+                // whatever the client sends next would be read as the tail of this one.
+                // A 408 is the one answer that has to close.
+                if response.status() == axum::http::StatusCode::REQUEST_TIMEOUT {
+                    response.headers_mut().insert(
+                        axum::http::header::CONNECTION,
+                        axum::http::HeaderValue::from_static("close"),
+                    );
+                }
+                return response;
             }
         }
     };
@@ -374,6 +431,72 @@ async fn fallback(state: FallbackState, req: AxumRequest) -> axum::response::Res
 fn accepts_html(req: &Request) -> bool {
     req.header("accept")
         .is_some_and(|accept| accept.contains("text/html"))
+}
+
+/// Builds the CORS layer, rejecting anything that is not a valid header or method so
+/// the mistake is a startup error rather than a request that quietly loses a header.
+fn cors_layer(config: &super::config::CorsConfig) -> Result<CorsLayer> {
+    let mut layer = CorsLayer::new();
+
+    layer = if config.allowed_origins.iter().any(|origin| origin == "*") {
+        layer.allow_origin(Any)
+    } else {
+        let mut origins = Vec::with_capacity(config.allowed_origins.len());
+        for origin in &config.allowed_origins {
+            origins.push(origin.parse::<axum::http::HeaderValue>().map_err(|err| {
+                Error::with_source(500, err).detail(format!("`{origin}` is not a valid origin"))
+            })?);
+        }
+        layer.allow_origin(origins)
+    };
+
+    layer = if config.allowed_headers.iter().any(|header| header == "*") {
+        layer.allow_headers(Any)
+    } else if config.allowed_headers.is_empty() {
+        layer
+    } else {
+        let mut headers = Vec::with_capacity(config.allowed_headers.len());
+        for header in &config.allowed_headers {
+            headers.push(header.parse::<axum::http::HeaderName>().map_err(|err| {
+                Error::with_source(500, err)
+                    .detail(format!("`{header}` is not a valid request header name"))
+            })?);
+        }
+        layer.allow_headers(headers)
+    };
+
+    if !config.allowed_methods.is_empty() {
+        let mut methods = Vec::with_capacity(config.allowed_methods.len());
+        for method in &config.allowed_methods {
+            methods.push(
+                Method::from_bytes(method.to_ascii_uppercase().as_bytes()).map_err(|err| {
+                    Error::with_source(500, err)
+                        .detail(format!("`{method}` is not a valid HTTP method"))
+                })?,
+            );
+        }
+        layer = layer.allow_methods(methods);
+    }
+
+    if !config.exposed_headers.is_empty() {
+        let mut headers = Vec::with_capacity(config.exposed_headers.len());
+        for header in &config.exposed_headers {
+            headers.push(header.parse::<axum::http::HeaderName>().map_err(|err| {
+                Error::with_source(500, err)
+                    .detail(format!("`{header}` is not a valid response header name"))
+            })?);
+        }
+        layer = layer.expose_headers(headers);
+    }
+
+    if config.allow_credentials {
+        layer = layer.allow_credentials(true);
+    }
+    if let Some(max_age) = config.max_age {
+        layer = layer.max_age(std::time::Duration::from_secs(max_age));
+    }
+
+    Ok(layer)
 }
 
 /// Renders an error envelope with the given status.

@@ -318,6 +318,42 @@ async fn upload(req: Request) -> Result<Message> {
 | `web.server.maxBodySize` | 10 MiB（`-1` 为不限） | 整个请求体；超出返回 `413` |
 | `web.server.maxUploadMemory` | 1 MiB | 单文件内存预算；超出落临时文件 |
 
+### 服务器限制（全部生效）
+
+| 配置 | 默认值 | 含义 |
+|---|---|---|
+| `readHeaderTimeout` | 15 秒 | 客户端发请求头的最长时间；一个字节一个字节磨的客户端会被断开 |
+| `readTimeout` | 不限 | 客户端发请求**体**的最长时间；超出返回 `408` 并关闭连接 |
+| `maxHeaderBytes` | 16 KiB | 请求头上限。小于 8 KiB 会被抬到 8 KiB——那是 HTTP/1 连接能用的最小读缓冲 |
+
+`readTimeout` 只约束**读取**。慢**响应**——SSE 流、WebSocket——永远不会被它掐断。
+
+### CORS
+
+不配置就完全不发 CORS 头，这是安全默认：其它源的浏览器读不到响应。配置了就会在路由之外套一层，
+所以预检 `OPTIONS` 能得到应答——没有这一层时，那个请求会是个 `405`：
+
+```yaml
+web:
+  server:
+    cors:
+      allowedOrigins: ["https://app.example.com"]   # 或 ["*"]
+      allowedMethods: [GET, POST]
+      allowedHeaders: [content-type, authorization]
+      allowCredentials: true
+      maxAge: 3600
+```
+
+非法 origin 或 method 是**启动错误**，而不是某个请求悄悄少一个头。
+
+### `contextPath` 与静态文件的位置
+
+`contextPath` 给所有路由加前缀。写成 `api`、`/api/` 还是 `/api` 是同一件事——会归一化成 `/api`；
+fallback 查 `locations` 时会把前缀剥掉，所以界面可以放在 `/`、API 放在 `/api`。
+
+`locations` 映射到 URL **根**：每个目录**就是**根，所以 `./public/report.csv` 在 `/report.csv`
+提供，而不是 `/public/report.csv`。
+
 ### 静态文件
 
 `routes.static_files("/assets", "./public")` 和 `web.server.locations` 都是流式读盘，并完整支持
@@ -353,7 +389,7 @@ panic 会被兜住：客户端拿到标准 `500` 信封（**不会**看到 panic
 | **响应** | `Response`、`Message`（`{code, data, msg, type}`）、`FileResponse`、重定向、原始 body，以及为 handler 常用返回类型实现的 `IntoResponse` |
 | **错误** | `Error` 同时承载 HTTP 码与业务码；从 `io::Error`、`sea_orm::DbErr`、`serde_json::Error`、`String`、`&str` 的 `?` 友好转换 |
 | **流式** | `SseStream`、`WebSocketStream` |
-| **运维** | 访问日志（每请求一行，`debug` 级）、panic 隔离并返回标准 500 信封、带 runner 宽限期的优雅关停 |
+| **运维** | 访问日志（每请求一行，`debug` 级）、panic 隔离并返回标准 500 信封、请求超时、CORS、带 runner 与连接宽限期的优雅关停 |
 | **上传** | `MultipartForm`、`UploadedFile`、`sanitise_file_name`，流式解析并落临时文件 |
 | **扩展点** | `Filter`、`Converter`、`Runner`、`Rest`、`Service` |
 | **数据** | `db::Database`（连接池**或**事务）、`db::transaction`、`Model<E>`、`define_model!`、`ModelGroup` —— 查询本身交给 [sea-orm](https://docs.rs/sea-orm) |

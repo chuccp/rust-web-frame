@@ -15,7 +15,8 @@ web:
     # Prefixed to every route, so a handler registered at `/users` is served at
     # `/api/users`.
     # contextPath: /api
-    # Static files served when no route matches.
+    # Static files served when no route matches. Each directory *is* the URL root:
+    # `./public/report.csv` is served at `/report.csv`, not `/public/report.csv`.
     # locations: ["./public"]
     # Served to browsers for unmatched navigations, so a single-page app keeps its deep
     # links.
@@ -23,6 +24,27 @@ web:
     # `0` means the 10 MiB default, `-1` means unlimited. Raise it to accept uploads
     # larger than 10 MiB.
     maxBodySize: 0
+
+    # How long a client may take to send its request headers, in seconds. `0` means 15.
+    # A client that dribbles them is disconnected instead of holding a connection open.
+    readHeaderTimeout: 0
+    # How long a client may take to send the request *body*, in seconds. `0` means no
+    # limit. Only reading is bounded — a slow response (SSE, WebSocket) is never cut off.
+    readTimeout: 0
+    # Ceiling on the request head, in bytes. `0` means 16 KiB. Values below 8 KiB are
+    # raised to it: that is the smallest read buffer an HTTP/1 connection can use.
+    maxHeaderBytes: 0
+
+    # Cross-origin policy. Omit the section and no CORS headers are sent at all, which is
+    # the safe default. Configured, it is applied outside the router, so a preflight
+    # OPTIONS is answered even though it matches no route.
+    # cors:
+    #   allowedOrigins: ["https://app.example.com"]   # or ["*"]
+    #   allowedMethods: [GET, POST, PUT, DELETE]
+    #   allowedHeaders: [content-type, authorization]
+    #   exposedHeaders: []
+    #   allowCredentials: true
+    #   maxAge: 3600
     # How much of one uploaded file is held in memory before it spills to a temporary
     # file. `0` means the 1 MiB default. This is what keeps a big upload costing disk
     # space rather than resident memory.
