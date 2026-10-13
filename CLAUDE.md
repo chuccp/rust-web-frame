@@ -252,6 +252,15 @@ shape. `Database::transaction` hands the closure an owned handle; commit uses
 `Arc::try_unwrap`, so a handle that leaked into a spawned task rolls back and reports why
 rather than committing silently.
 
+`DbConfig` — the `db` section — is sea-orm's `ConnectOptions` written in YAML: a `url` (the
+connection string sqlx and `DATABASE_URL` take, so the scheme picks the driver) and one key
+per setter, flat, `None` meaning "sea-orm's own default". The Go original's `type`, `host`,
+`port`, `user`, `password` and `database` fields were dropped deliberately: assembling a url
+from them means two sources of truth for where the database is, and a `type` that can
+disagree with the scheme. Do not add them back. `DbConfig::sqlite(path)` builds a
+`sqlite://…?mode=rwc` url, since sqlx will not create a file without it; a url from a config
+file is passed through untouched.
+
 ### Errors
 
 One type, `web::Error`, carrying an HTTP code *and* a business code. Business codes

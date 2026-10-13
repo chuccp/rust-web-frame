@@ -222,7 +222,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut builder = wf::Builder::new(config);
 
     // An in-memory database, so the example runs with no setup. Swap in
-    // `DbConfig::sqlite("./data.db")` or `DbConfig::mysql(...)` for the real thing.
+    // `DbConfig::sqlite("./data.db")`, or `DbConfig::new("mysql://user:secret@localhost/shop")`,
+    // for the real thing.
     let database = connect(&DbConfig::sqlite_memory()).await?;
     builder.model(UserModel::new(database));
 

@@ -232,8 +232,7 @@ web:
       port: 8081
 
 db:
-  type: sqlite                 # sqlite | mysql | postgres
-  path: ./data.db
+  url: sqlite://./data.db?mode=rwc   # sea-orm 的连接串
 
 log:
   level: info                  # tracing 过滤指令
@@ -241,8 +240,12 @@ log:
   format: text                 # text | json
 ```
 
-MySQL / PostgreSQL 用 `host`/`port`/`user`/`password`/`database`。其它 sea-orm 能连的库
-（ClickHouse、SQL Server）通过 `db.url` 直接支持，框架不需要为它们写代码。
+`db.url` 就是 sea-orm 的连接串 —— `mysql://user:secret@host:3306/db`、
+`postgres://user:secret@host/db`、`sqlite://./data.db?mode=rwc` —— scheme 决定驱动，其它
+sea-orm 能连的库（ClickHouse、SQL Server）框架不需要写任何代码。section 里其余每个键都是
+sea-orm [`ConnectOptions`](https://docs.rs/sea-orm/latest/sea_orm/struct.ConnectOptions.html)
+的一个设置项，名字与 setter 一致：`maxConnections`、`acquireTimeout`、`maxLifetime`、
+`statementTimeout`、`sqlLogging`、`connectLazy`、`testBeforeAcquire` 等等。
 
 ```rust
 let config = load_auto_config()?;
@@ -516,6 +519,7 @@ feature 开关：`sqlite`（默认）、`mysql`、`postgres`。
 | `Query.Where("age > ?", 18)` | `filter(Column::Age.eq(18))` | 类型化的列在调用处就被检查；字符串条件只能到运行时才报错。 |
 | 内嵌 `*model.EntryModel[T, PK]` | `define_model!` → `Deref<Target = Model<E>>` | 用宏写出 Rust 写不出的"内嵌"。 |
 | `Viper.UnmarshalKey` | `config.section::<T>("web.server")` | "反序列化一个配置段"不叫 unmarshal key。 |
+| `db: {type, host, port, user, password, database, charset}` | `db: {url: "mysql://user:secret@host:3306/db"}` + sea-orm 的 `ConnectOptions` 设置项 | 连接串**就是** sea-orm 的接口，scheme 已经指明了驱动。用一堆字段拼出连接串等于给"库在哪"留两个真相来源，还会出现 `type` 与字段互相矛盾的情况。 |
 | `Message{code, data, msg, type}` | `Message{code, data, message, kind}`（serde rename 保持线上格式） | `type` 是关键字，`msg` 是缩写。 |
 | `PageAble.List` | `Paged.items`（序列化为 `list`） | —— |
 | `gin.HandlerFunc` | `web::Handler` | 按"它是什么"命名，而不是按引入它的那个包。 |

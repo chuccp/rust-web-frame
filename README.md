@@ -241,8 +241,7 @@ web:
       port: 8081
 
 db:
-  type: sqlite                 # sqlite | mysql | postgres
-  path: ./data.db
+  url: sqlite://./data.db?mode=rwc   # sea-orm's connection string
 
 log:
   level: info                  # a tracing filter directive
@@ -250,8 +249,13 @@ log:
   format: text                 # text | json
 ```
 
-MySQL and PostgreSQL take `host`/`port`/`user`/`password`/`database`. Anything else sea-orm
-can reach — ClickHouse, SQL Server — works through `db.url` with no framework support.
+`db.url` is the connection string sea-orm takes — `mysql://user:secret@host:3306/db`,
+`postgres://user:secret@host/db`, `sqlite://./data.db?mode=rwc` — so the scheme picks the
+driver and anything else sea-orm can reach (ClickHouse, SQL Server) works with no framework
+support. Every other key in the section is one of sea-orm's
+[`ConnectOptions`](https://docs.rs/sea-orm/latest/sea_orm/struct.ConnectOptions.html)
+settings under the setter's own name: `maxConnections`, `acquireTimeout`, `maxLifetime`,
+`statementTimeout`, `sqlLogging`, `connectLazy`, `testBeforeAcquire`, and the rest.
 
 ```rust
 let config = load_auto_config()?;
@@ -542,6 +546,7 @@ The design is the same; the language forces a few honest changes.
 | `Query.Where("age > ?", 18)` | `filter(Column::Age.eq(18))` | Typed columns are checked at the call site; a string condition can only fail at runtime. |
 | Embedding `*model.EntryModel[T, PK]` | `define_model!` → `Deref<Target = Model<E>>` | The macro writes the embedding Rust cannot. |
 | `Viper.UnmarshalKey` | `config.section::<T>("web.server")` | Deserialising a config section is not "unmarshalling a key". |
+| `db: {type, host, port, user, password, database, charset}` | `db: {url: "mysql://user:secret@host:3306/db"}` plus sea-orm's `ConnectOptions` settings | The connection string *is* sea-orm's interface, and its scheme names the driver. Assembling one from parts adds a second source of truth for where the database is, and a `type` that can disagree with the fields. |
 | `Message{code, data, msg, type}` | `Message{code, data, message, kind}` (serde renames keep the wire format) | `type` is a keyword, and `msg` is an abbreviation. |
 | `PageAble.List` | `Paged.items` (serialised as `list`) | — |
 | `gin.HandlerFunc` | `web::Handler` | Named after what it is, not after the package that introduced it. |

@@ -77,25 +77,38 @@ web:
 # The `db` section is read by `db::connect_from_config`. Leave it out to run without a
 # database — `Context::db()` then reports a helpful error instead of failing at startup.
 #
-# SQLite:
+# `url` is sea-orm's connection string, i.e. sqlx's: the scheme picks the driver, and it is
+# the same string `DATABASE_URL` and the sea-orm CLI take. There is no `type` field to keep
+# in step with it.
+#
+# SQLite (`mode=rwc` creates the file when it is missing; without it sqlx only opens one
+# that already exists):
 # db:
-#   type: sqlite
-#   path: ./data.db
+#   url: sqlite://./data.db?mode=rwc
 #
 # MySQL:
 # db:
-#   type: mysql
-#   host: localhost
-#   port: 3306
-#   user: root
-#   password: secret
-#   database: mydb
-#   maxConnections: 20
+#   url: mysql://root:secret@localhost:3306/mydb
 #
-# Anything else sea-orm can reach — ClickHouse, SQL Server — goes through a raw url:
+# PostgreSQL:
 # db:
-#   type: clickhouse
+#   url: postgres://postgres:secret@localhost:5432/shop
+#
+# Anything else sea-orm can reach — ClickHouse, SQL Server — is the same shape:
+# db:
 #   url: clickhouse://user:pass@localhost:9000/default
+#
+# Every other key in the section is one of sea-orm's `ConnectOptions` settings, under the
+# setter's own name. A key that is absent is left at sea-orm's default.
+# db:
+#   url: postgres://postgres:secret@localhost:5432/shop
+#   maxConnections: 20
+#   minConnections: 2
+#   acquireTimeout: 5          # seconds a query waits for a free connection
+#   maxLifetime: 1800          # seconds before a connection is recycled
+#   statementTimeout: 30       # seconds a single statement may run
+#   sqlLogging: true
+#   sqlLoggingLevel: debug
 
 log:
   # A `tracing` filter directive: `info`, `debug`, `my_app=debug,tower=warn`.

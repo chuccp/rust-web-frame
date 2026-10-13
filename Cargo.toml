@@ -71,6 +71,9 @@ jsonwebtoken = { version = "11.1.0", default-features = false, features = ["rust
 qrcode = { version = "0.14.1", default-features = false, features = ["image", "svg"] }
 cron = "0.17.0"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
+# sqlx's slow-statement logging takes a `log::LevelFilter`, which is what `sqlLoggingLevel`
+# and `slowStatementThreshold` are written in.
+log = "0.4.34"
 
 [features]
 default = ["sqlite"]
