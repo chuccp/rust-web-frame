@@ -43,8 +43,11 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       # Everything below publishes or commits, so what was tagged is checked first.
+      #
+      # No `--all-targets`: that flag skips the doc tests, which are seventy of this crate's
+      # four hundred.
       - name: Run tests
-        run: cargo test --locked --all-targets
+        run: cargo test --locked
 
       - name: Run clippy
         run: cargo clippy --locked --all-targets -- -D warnings
