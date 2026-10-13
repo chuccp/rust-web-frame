@@ -176,6 +176,17 @@ impl MetaOption {
     }
 }
 
+impl std::fmt::Display for MetaOption {
+    /// What the option asks for, for a log line or an error: `` `login` `` or
+    /// `` `require_permission` = "admin:create_user" ``.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Key(keys) => write!(f, "`{}`", keys.join("` or `")),
+            Self::Value(key, value) => write!(f, "`{key}` = {value}"),
+        }
+    }
+}
+
 /// What kind of endpoint a route serves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum RouteKind {

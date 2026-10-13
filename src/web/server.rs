@@ -108,6 +108,7 @@ impl Server {
     /// here.
     pub fn merge_routes(&self, routes: &Routes) {
         self.handles.extend(routes.entries());
+        self.handles.extend_guards(routes.guards());
     }
 
     /// Checks the route table and the configuration for mistakes that would otherwise
@@ -130,12 +131,14 @@ impl Server {
     }
 
     /// Checks the route table for mistakes that would otherwise surface as a panic while
-    /// binding.
+    /// binding — or, worse, not surface at all.
     ///
     /// # Errors
     ///
-    /// Fails when two routes claim the same method and path, or when a path template
-    /// cannot be parsed by the router.
+    /// Fails when two routes claim the same method and path, when a path template cannot be
+    /// parsed by the router, or when a route under a
+    /// [`require_meta`](crate::web::Routes::require_meta) prefix does not carry the
+    /// metadata that prefix requires.
     pub fn validate(&self) -> Result<()> {
         let mut seen: HashMap<(String, String), String> = HashMap::new();
         let mut probed: HashSet<String> = HashSet::new();
@@ -163,6 +166,31 @@ impl Server {
                         ),
                     ));
                 }
+            }
+        }
+
+        // A guard is the answer to "did every route that needs this policy ask for it?",
+        // and the answer has to arrive before the server does: metadata is opt-in, so a
+        // route that forgot asks for nothing and would otherwise serve unprotected.
+        for guard in self.handles.guards() {
+            let prefix = guard.prefix();
+            for route in self.handles.entries() {
+                if !guard.broken_by(&route) {
+                    continue;
+                }
+                let required = guard.required();
+                return Err(Error::new(
+                    500,
+                    format!(
+                        "`{}` is under `{prefix}` and does not carry {required}",
+                        route.path()
+                    ),
+                )
+                .detail(format!(
+                    "every route under `{prefix}` is required to carry {required} — add \
+                     `.with_meta(...)` with it to `{}`, or narrow the guard's prefix",
+                    route.path()
+                )));
             }
         }
 

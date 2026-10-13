@@ -134,9 +134,14 @@ Routes are keyed by `(path, method)`. Paths are written in Gin syntax (`/users/:
 through. `RouteHandle` wraps `Arc<Route>` and `with_meta` consumes it — idiomatic builder,
 same chaining as `ctx.Get(...).WithMeta(...)` in the Go original.
 
-`Server::validate` runs before binding and turns two mistakes into startup errors instead
-of panics: duplicate `(path, method)` pairs, and path templates matchit rejects. It probes
-each *distinct* path once, because several routes legitimately share one path.
+`Server::validate` runs before binding and turns three mistakes into startup errors instead
+of panics or silence: duplicate `(path, method)` pairs, path templates matchit rejects, and
+a route under a `Routes::require_meta` prefix that does not carry the metadata the prefix
+requires. It probes each *distinct* path once, because several routes legitimately share one
+path; the guard check is what answers "did every route that needs this policy ask for it?",
+which nothing else can, because metadata is opt-in by design — a route that forgets it asks
+for nothing and would otherwise serve unprotected. Guards travel with the routes they were
+declared beside, so `Server::merge_routes` carries them into the default server.
 
 Dispatch (`Server::router` + `dispatch`): read the body under `effective_max_body_size`,
 extract path params and a pending `WebSocketUpgrade`, build a `Request`, run the

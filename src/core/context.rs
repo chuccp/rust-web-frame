@@ -11,7 +11,7 @@ use crate::db::Database;
 use crate::model::Page;
 use crate::web::Server as WebServer;
 use crate::web::{
-    Error, Handler, Request, Response, Result, RouteHandle, ServerConfig, SseStream,
+    Error, Handler, MetaOption, Request, Response, Result, RouteHandle, ServerConfig, SseStream,
     WebSocketStream, code, handler,
 };
 
@@ -327,6 +327,27 @@ impl Context {
     /// Registers a `PATCH` route.
     pub fn patch(&self, path: &str, endpoint: Handler) -> RouteHandle {
         self.server().routes().patch(path, endpoint)
+    }
+
+    /// Requires every route under `prefix` to carry `option`, checked when the server
+    /// starts.
+    ///
+    /// The metadata a filter enforces is opt-in, so a route that forgot it is a route that
+    /// is not protected — silently. A guard states the rule once and turns every such
+    /// route into a startup error.
+    ///
+    /// ```no_run
+    /// # use rust_web_frame::core::Context;
+    /// # use rust_web_frame::web::{MetaOption, handler};
+    /// # fn routes(ctx: &Context) {
+    /// # let require_admin = || MetaOption::value("admin", true);
+    /// ctx.require_meta("/admin", require_admin());
+    /// ctx.get("/admin/users", handler(|_| async { Ok("users") }))
+    ///     .with_meta(require_admin());
+    /// # }
+    /// ```
+    pub fn require_meta(&self, prefix: &str, option: MetaOption) {
+        self.server().routes().require_meta(prefix, option);
     }
 
     /// Registers a route answering every HTTP method.

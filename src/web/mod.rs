@@ -65,7 +65,7 @@ pub use multipart::{
 pub use request::{Request, SetCookie};
 pub use response::{IntoResponse, Response, ResponseBody};
 pub use route::{HandlerMeta, MetaOption, Route, RouteHandle, RouteKind};
-pub use routes::Routes;
+pub use routes::{RouteGuard, Routes};
 pub use tls::CertStore;
 
 /// Pagination types live with the model layer but are re-exported here, because a

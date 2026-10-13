@@ -516,6 +516,83 @@ async fn metadata_attached_to_a_builder_route_reaches_the_served_route() {
     );
 }
 
+/// What an application would require of everything under `/admin`.
+fn admin_only() -> MetaOption {
+    MetaOption::value("admin", true)
+}
+
+#[tokio::test]
+async fn a_guarded_route_that_forgot_its_metadata_is_refused_at_startup() {
+    // Metadata is opt-in, so a route that forgets it asks for nothing and would answer
+    // unprotected — the failure a guard exists to turn into a startup error.
+    let mut builder = Builder::new(Config::empty());
+    builder.require_meta("/admin", admin_only());
+    builder
+        .get("/admin/users", handler(|_| async { Ok("users") }))
+        .with_meta(admin_only());
+    builder.get("/admin/settings", handler(|_| async { Ok("settings") }));
+
+    let error = builder
+        .build()
+        .into_router()
+        .await
+        .expect_err("a guarded route with no metadata must be refused at startup");
+
+    // The message has to name the route that is wrong and what it is missing, or the fix
+    // is a hunt through the route table.
+    let text = format!("{} {}", error.message, error.client_message());
+    assert!(text.contains("/admin/settings"), "names the route: {text}");
+    assert!(text.contains("`admin` = true"), "names the option: {text}");
+}
+
+#[tokio::test]
+async fn a_guarded_route_that_carries_its_metadata_serves() {
+    let app = app(|builder| {
+        builder.routes(|ctx| {
+            ctx.require_meta("/admin", admin_only());
+            ctx.get(
+                "/admin/users",
+                handler(|_| async { Ok(Response::json(json!({ "admin": true }))) }),
+            )
+            .with_meta(admin_only());
+        });
+    })
+    .await;
+
+    let (status, _, body) = call(&app, get("/admin/users")).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["admin"], true, "{body}");
+}
+
+#[tokio::test]
+async fn a_guard_covers_its_prefix_and_what_is_below_it_only() {
+    // Whole segments: `/administrator` is a neighbour, not a route under `/admin`.
+    let app = app(|builder| {
+        builder.routes(|ctx| {
+            ctx.require_meta("/admin", admin_only());
+            ctx.get("/admin", handler(|_| async { Ok("root") }))
+                .with_meta(admin_only());
+            ctx.get("/administrator", handler(|_| async { Ok("neighbour") }));
+        });
+    })
+    .await;
+
+    let (status, _, _) = call(&app, get("/administrator")).await;
+    assert_eq!(status, 200, "a route that merely starts with the prefix");
+}
+
+#[tokio::test]
+async fn a_guard_covers_the_prefix_itself() {
+    let mut builder = Builder::new(Config::empty());
+    builder.require_meta("/admin", admin_only());
+    builder.get("/admin", handler(|_| async { Ok("root") }));
+
+    assert!(
+        builder.build().into_router().await.is_err(),
+        "`/admin` is under `/admin`"
+    );
+}
+
 // ------------------------------------------------------------ concurrency
 
 #[tokio::test]

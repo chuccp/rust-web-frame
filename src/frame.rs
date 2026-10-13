@@ -12,7 +12,7 @@ use crate::core::{
 use crate::db;
 use crate::log::{self, LOG_CONFIG_KEY, LogConfig};
 use crate::model::Table;
-use crate::web::{Converter, Filter, Handler, Result, RouteHandle, Routes, Server};
+use crate::web::{Converter, Filter, Handler, MetaOption, Result, RouteHandle, Routes, Server};
 
 /// Assembles an application.
 ///
@@ -220,6 +220,22 @@ impl Builder {
     /// Registers a route answering every HTTP method.
     pub fn any(&mut self, path: &str, endpoint: Handler) -> RouteHandle {
         self.routes.any(path, endpoint)
+    }
+
+    /// Requires every route under `prefix` on the default server to carry `option`,
+    /// checked when the server starts.
+    ///
+    /// ```no_run
+    /// # use rust_web_frame::{Builder, config::Config};
+    /// # use rust_web_frame::web::{MetaOption, handler};
+    /// let mut builder = Builder::new(Config::empty());
+    /// let require_admin = || MetaOption::value("admin", true);
+    /// builder.require_meta("/admin", require_admin());
+    /// builder.get("/admin/users", handler(|_| async { Ok("users") }))
+    ///     .with_meta(require_admin());
+    /// ```
+    pub fn require_meta(&mut self, prefix: impl AsRef<str>, option: MetaOption) {
+        self.routes.require_meta(prefix, option);
     }
 
     // ----------------------------------------------------------- finishing

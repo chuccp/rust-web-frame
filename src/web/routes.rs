@@ -16,7 +16,7 @@ use super::error::{Error, Result};
 use super::filter::{Handler, all_methods, handler, standard_methods};
 use super::request::Request;
 use super::response::{Response, ResponseBody};
-use super::route::{Route, RouteHandle, RouteKind};
+use super::route::{MetaOption, Route, RouteHandle, RouteKind};
 use super::sse::{SseHandler, SseStream};
 use super::ws::{WebSocketHandler, WebSocketStream};
 
@@ -34,6 +34,58 @@ use super::ws::{WebSocketHandler, WebSocketStream};
 #[derive(Debug, Default)]
 pub struct Routes {
     entries: Mutex<Vec<Arc<Route>>>,
+    guards: Mutex<Vec<RouteGuard>>,
+}
+
+/// A requirement that every route under a path prefix carries given metadata.
+///
+/// Declared with [`Routes::require_meta`] and checked by
+/// [`Server::validate`](super::Server::validate) before the server binds, so a route that
+/// forgot the policy it is supposed to carry is a startup error rather than an endpoint
+/// that quietly answers without it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RouteGuard {
+    /// Normalised: no trailing slash, and `""` for a guard over everything.
+    prefix: String,
+    required: MetaOption,
+}
+
+impl RouteGuard {
+    /// The prefix this guard speaks for, as it will be written in a message.
+    #[must_use]
+    pub fn prefix(&self) -> &str {
+        if self.prefix.is_empty() {
+            "/"
+        } else {
+            &self.prefix
+        }
+    }
+
+    /// The metadata it requires.
+    #[must_use]
+    pub fn required(&self) -> &MetaOption {
+        &self.required
+    }
+
+    /// Whether this guard speaks for `path`.
+    ///
+    /// A whole segment at a time: `/admin` covers `/admin` and `/admin/users`, and leaves
+    /// `/administrator` alone.
+    #[must_use]
+    pub fn covers(&self, path: &str) -> bool {
+        self.prefix.is_empty()
+            || path == self.prefix
+            || path
+                .strip_prefix(&self.prefix)
+                .is_some_and(|rest| rest.starts_with('/'))
+    }
+
+    /// Whether `route` breaks this guard — it is under the prefix, and does not carry what
+    /// the prefix requires.
+    #[must_use]
+    pub fn broken_by(&self, route: &Route) -> bool {
+        self.covers(route.path()) && !self.required.matches(route.meta())
+    }
 }
 
 impl Routes {
@@ -41,6 +93,42 @@ impl Routes {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Requires every route under `prefix` to carry `option`, from the moment the server
+    /// starts.
+    ///
+    /// The metadata a filter enforces is opt-in, which is what lets one filter serve every
+    /// route that asks for it — and also what lets a new route quietly ask for nothing. A
+    /// guard closes that: the routes that must carry an option are stated once, and one
+    /// that does not is a startup error naming it.
+    ///
+    /// ```
+    /// # use rust_web_frame::web::{handler, MetaOption, Routes};
+    /// # fn require_admin() -> MetaOption { MetaOption::value("admin", true) }
+    /// let routes = Routes::new();
+    /// routes.require_meta("/admin", require_admin());
+    ///
+    /// routes
+    ///     .get("/admin/users", handler(|_| async { Ok("users") }))
+    ///     .with_meta(require_admin());
+    /// // A second route under `/admin` without `.with_meta(require_admin())` would be
+    /// // refused when the server starts.
+    /// ```
+    pub fn require_meta(&self, prefix: impl AsRef<str>, option: MetaOption) {
+        self.guards
+            .lock()
+            .expect("route table poisoned")
+            .push(RouteGuard {
+                prefix: prefix.as_ref().trim_end_matches('/').to_owned(),
+                required: option,
+            });
+    }
+
+    /// A snapshot of the guards.
+    #[must_use]
+    pub fn guards(&self) -> Vec<RouteGuard> {
+        self.guards.lock().expect("route table poisoned").clone()
     }
 
     /// Reports whether no routes have been registered.
@@ -89,6 +177,15 @@ impl Routes {
             .lock()
             .expect("route table poisoned")
             .extend(routes);
+    }
+
+    /// Appends guards that were declared elsewhere. A guard belongs to the routes it was
+    /// declared beside, so it travels with them.
+    pub(crate) fn extend_guards(&self, guards: impl IntoIterator<Item = RouteGuard>) {
+        self.guards
+            .lock()
+            .expect("route table poisoned")
+            .extend(guards);
     }
 
     fn push(&self, route: Route) -> RouteHandle {
